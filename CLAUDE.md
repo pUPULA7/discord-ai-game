@@ -5,6 +5,9 @@
 
 ## 起動されたときの作業手順
 
+0. `npm run discord:fetch` で Discord の新しい投稿を `instructions/pending/` に取り込む。
+   - 出力 JSON の `created` に新規ファイルと `message_id` が出る。取得位置は `instructions/.discord-cursor` に記録される。
+   - Discord に接続できない環境（ローカル作業など）ではこの手順を飛ばしてよい。
 1. `instructions/pending/` にある未処理の指示ファイル（`.gitkeep` 以外）を**すべて**読む。
    - 指示は **1 指示 1 ファイル**。ファイル名順（古い順）に読む。
    - 未処理の指示が 1 つもなければ、何も変更せず終了する。
@@ -13,6 +16,11 @@
 4. `CHANGELOG.md` に今回の変更を追記する（どの指示ファイルを、どう反映したか）。
 5. `GAME.md` を現状の仕様・操作方法に合わせて更新する。
 6. 最後に `npm run build` が通ることを確認する。通らなければ直してから終える。
+7. （定期実行のとき）変更と `instructions/.discord-cursor` をコミットし、`main` に push する（Pages に自動デプロイされる）。
+   - 新しい指示がなくてもカーソルが進んだならコミット・push する。
+8. push できたら、Discord の元投稿にリアクションを付ける（`message_id` は指示ファイル冒頭に書いてある）:
+   - 反映した指示: `npm run discord:react -- ✅ <message_id...>`
+   - スキップした指示: `npm run discord:react -- 🙅 <message_id...>`
 
 ## 指示同士が矛盾したとき
 
@@ -45,6 +53,8 @@
 
 - `src/main.js` — Phaser のゲーム設定
 - `src/scenes/` — シーン
+- `scripts/discord.mjs` — Discord の投稿取得・リアクション（トークンはクラウド環境のプロキシが注入。コードに書かない）
+- `instructions/.discord-cursor` — Discord の取得位置（最後に見たメッセージ ID）
 - `instructions/pending/` — 未処理の指示
 - `instructions/done/` — 処理済みの指示
 - `GAME.md` — ゲーム設計メモ（現状の仕様・操作方法）。**変更のたびに更新する**
