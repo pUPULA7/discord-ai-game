@@ -2,6 +2,8 @@ import Phaser from 'phaser';
 
 const PLAYER_SIZE = 32;
 const PLAYER_SPEED = 200; // px/秒
+// スペースキーで順番に切り替わるプレイヤーの色（最初は黄色）
+const PLAYER_COLORS = [0xffcc00, 0xff004d, 0x00e436, 0x29adff, 0xff77a8, 0xffffff];
 
 export class MainScene extends Phaser.Scene {
   constructor() {
@@ -12,7 +14,8 @@ export class MainScene extends Phaser.Scene {
     const { width, height } = this.scale;
 
     // プレイヤー（四角）
-    this.player = this.add.rectangle(width / 2, height / 2, PLAYER_SIZE, PLAYER_SIZE, 0xffcc00);
+    this.player = this.add.rectangle(width / 2, height / 2, PLAYER_SIZE, PLAYER_SIZE, PLAYER_COLORS[0]);
+    this.colorIndex = 0;
     this.physics.add.existing(this.player);
     this.player.body.setCollideWorldBounds(true);
 
@@ -20,7 +23,14 @@ export class MainScene extends Phaser.Scene {
     this.cursors = this.input.keyboard.createCursorKeys();
     this.wasd = this.input.keyboard.addKeys('W,A,S,D');
 
-    this.add.text(12, 12, '矢印キー / WASD で移動', {
+    // スペースキー：押すたびに色を切り替える
+    this.input.keyboard.on('keydown-SPACE', (event) => {
+      if (event.repeat) return; // 押しっぱなしでは連続で変えない
+      this.colorIndex = (this.colorIndex + 1) % PLAYER_COLORS.length;
+      this.player.setFillStyle(PLAYER_COLORS[this.colorIndex]);
+    });
+
+    this.add.text(12, 12, '矢印キー / WASD で移動　スペースで色チェンジ', {
       fontFamily: 'sans-serif',
       fontSize: '16px',
       color: '#ffffff',
