@@ -2,6 +2,7 @@ import Phaser from 'phaser';
 
 const PLAYER_SIZE = 32;
 const PLAYER_SPEED = 200; // px/秒
+const PLAYER_DASH_SPEED = 400; // 左シフトを押している間の速さ（px/秒）
 // スペースキーで順番に切り替わるプレイヤーの色（最初は黄色）
 const PLAYER_COLORS = [0xffcc00, 0xff004d, 0x00e436, 0x29adff, 0xff77a8, 0xffffff];
 
@@ -30,7 +31,20 @@ export class MainScene extends Phaser.Scene {
       this.player.setFillStyle(PLAYER_COLORS[this.colorIndex]);
     });
 
-    this.add.text(12, 12, '矢印キー / WASD で移動　スペースで色チェンジ', {
+    // 左シフトキー：押している間だけ速く動く（右シフトは対象外）
+    this.leftShiftDown = false;
+    this.input.keyboard.on('keydown', (event) => {
+      if (event.code === 'ShiftLeft') this.leftShiftDown = true;
+    });
+    this.input.keyboard.on('keyup', (event) => {
+      if (event.code === 'ShiftLeft') this.leftShiftDown = false;
+    });
+    // ウィンドウからフォーカスが外れたら押しっぱなし扱いを解除
+    this.game.events.on(Phaser.Core.Events.BLUR, () => {
+      this.leftShiftDown = false;
+    });
+
+    this.add.text(12, 12, '矢印キー / WASD で移動　左シフトで加速　スペースで色チェンジ', {
       fontFamily: 'sans-serif',
       fontSize: '16px',
       color: '#ffffff',
@@ -46,7 +60,8 @@ export class MainScene extends Phaser.Scene {
     const vx = (right ? 1 : 0) - (left ? 1 : 0);
     const vy = (down ? 1 : 0) - (up ? 1 : 0);
 
-    const velocity = new Phaser.Math.Vector2(vx, vy).normalize().scale(PLAYER_SPEED);
+    const speed = this.leftShiftDown ? PLAYER_DASH_SPEED : PLAYER_SPEED;
+    const velocity = new Phaser.Math.Vector2(vx, vy).normalize().scale(speed);
     this.player.body.setVelocity(velocity.x, velocity.y);
   }
 }
