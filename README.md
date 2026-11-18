@@ -15,10 +15,11 @@ https://pupula7.github.io/discord-ai-game/
 
 ## 指示の出し方（仕組み）
 
-1. Discord の指示が `instructions/pending/` に 1 指示 1 ファイルで置かれる
-2. AI が定期的に起動し、未処理の指示をまとめてゲームに反映する
-3. 反映済みの指示は `instructions/done/` に移動される
+1. Discord の指示チャンネルに、ゲームへの要望を書き込む（1 投稿 = 1 指示）
+2. Claude の定期実行（ルーティン）が起動し、新しい投稿を `instructions/pending/` に取り込む（`scripts/discord.mjs`）
+3. 未処理の指示をまとめてゲームに反映し、反映済みの指示を `instructions/done/` に移動する
 4. main に push されると GitHub Pages に自動デプロイされる
+5. 反映された投稿には ✅、スキップされた投稿には 🙅 のリアクションが付く
 
 AI の作業ルールは [CLAUDE.md](./CLAUDE.md) にあります。
 
