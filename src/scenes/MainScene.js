@@ -31,11 +31,15 @@ export class MainScene extends Phaser.Scene {
   create() {
     const { width, height } = this.scale;
 
-    // プレイヤー（四角）
+    // プレイヤーの当たり判定（32 × 32 の四角。見た目は下の可愛いキャラで、こちらは非表示）
     this.player = this.add.rectangle(width / 2, height / 2, PLAYER_SIZE, PLAYER_SIZE, PLAYER_COLORS[0]);
+    this.player.setVisible(false);
     this.colorIndex = 0;
     this.physics.add.existing(this.player);
     this.player.body.setCollideWorldBounds(true);
+
+    // 見た目：まるいお顔のキャラ（当たり判定に毎フレーム追従する）
+    this.createCuteCharacter(width / 2, height / 2);
 
     // 入力：矢印キー + WASD
     this.cursors = this.input.keyboard.createCursorKeys();
@@ -78,10 +82,100 @@ export class MainScene extends Phaser.Scene {
     });
   }
 
+  // 可愛いキャラの見た目を作る（耳・まるい体・キラキラの目・ほっぺ・にっこり口）
+  createCuteCharacter(x, y) {
+    const color = PLAYER_COLORS[0];
+    const outline = 0x1d1d33;
+    const c = this.add.container(x, y).setDepth(10);
+
+    // 足元の影
+    const shadow = this.add.ellipse(0, 19, 30, 8, 0x000000, 0.25);
+    // ねこみみ（体と同じ色）
+    const earL = this.add.triangle(-10, -12, -7, 6, 7, 6, -3, -8, color).setStrokeStyle(2, outline);
+    const earR = this.add.triangle(10, -12, -7, 6, 7, 6, 3, -8, color).setStrokeStyle(2, outline);
+    const earInL = this.add.triangle(-10, -11, -3, 4, 3, 4, -1.5, -3, 0xff9ebb);
+    const earInR = this.add.triangle(10, -11, -3, 4, 3, 4, 1.5, -3, 0xff9ebb);
+    // まるい体
+    const body = this.add.circle(0, 0, 18, color).setStrokeStyle(2, outline);
+    // 体のツヤ
+    const shine = this.add.ellipse(-8, -9, 8, 5, 0xffffff, 0.55).setAngle(-30);
+
+    // 顔（目・ほっぺ・口）はまとめて動かせるように別コンテナに
+    const face = this.add.container(0, 2);
+    const eyeL = this.add.ellipse(-7, -2, 6, 8, outline);
+    const eyeR = this.add.ellipse(7, -2, 6, 8, outline);
+    const hiL = this.add.circle(-6, -4, 1.6, 0xffffff);
+    const hiR = this.add.circle(8, -4, 1.6, 0xffffff);
+    const cheekL = this.add.ellipse(-12, 5, 7, 4, 0xff6f91, 0.7);
+    const cheekR = this.add.ellipse(12, 5, 7, 4, 0xff6f91, 0.7);
+    const mouth = this.add.graphics();
+    mouth.lineStyle(2, outline, 1);
+    mouth.beginPath();
+    mouth.arc(-2, 4, 2, 0, Math.PI, false);
+    mouth.strokePath();
+    mouth.beginPath();
+    mouth.arc(2, 4, 2, 0, Math.PI, false);
+    mouth.strokePath();
+    face.add([cheekL, cheekR, eyeL, eyeR, hiL, hiR, mouth]);
+
+    c.add([shadow, earL, earR, earInL, earInR, body, shine, face]);
+
+    this.cute = { container: c, body, ears: [earL, earR], face, eyes: [eyeL, eyeR], highlights: [hiL, hiR] };
+    this.facing = 0; // 顔の向き（-1 左 〜 1 右）
+
+    // ときどきまばたき
+    this.time.addEvent({
+      delay: 2600,
+      loop: true,
+      callback: () => {
+        this.cute.eyes.forEach((e) => { e.scaleY = 0.15; });
+        this.cute.highlights.forEach((h) => h.setVisible(false));
+        this.time.delayedCall(120, () => {
+          this.cute.eyes.forEach((e) => { e.scaleY = 1; });
+          this.cute.highlights.forEach((h) => h.setVisible(true));
+        });
+      },
+    });
+  }
+
   // 色を次に切り替える（スペースキー・「色」ボタン共通）
   nextColor() {
     this.colorIndex = (this.colorIndex + 1) % PLAYER_COLORS.length;
-    this.player.setFillStyle(PLAYER_COLORS[this.colorIndex]);
+    const color = PLAYER_COLORS[this.colorIndex];
+    this.player.setFillStyle(color);
+    if (this.cute) {
+      this.cute.body.setFillStyle(color);
+      this.cute.ears.forEach((ear) => ear.setFillStyle(color));
+      // 色が変わったらぴょこっと弾む
+      this.tweens.add({ targets: this.cute.body, scale: { from: 1.2, to: 1 }, duration: 200, ease: 'Back.Out' });
+    }
+  }
+
+  // 見た目のキャラを当たり判定の位置に合わせ、動きに応じてぴょこぴょこさせる
+  updateCuteCharacter(vx, vy, time) {
+    const { container, face } = this.cute;
+    container.setPosition(this.player.x, this.player.y);
+    const moving = vx !== 0 || vy !== 0;
+    if (moving) {
+      // 歩くたびに弾む（上下 + ちょっと潰れる）
+      const t = time * (this.leftShiftDown || this.touchDashDown ? 0.03 : 0.02);
+      const hop = Math.abs(Math.sin(t));
+      container.y -= hop * 4;
+      container.scaleX = 1 + (1 - hop) * 0.08;
+      container.scaleY = 1 - (1 - hop) * 0.08;
+      container.angle = Math.sin(t) * 6;
+    } else {
+      // 止まっているときはゆっくり呼吸
+      const b = Math.sin(time * 0.004) * 0.03;
+      container.scaleX = 1 - b;
+      container.scaleY = 1 + b;
+      container.angle = 0;
+    }
+    // 進む方向に顔を向ける
+    const targetFacing = vx === 0 ? 0 : Math.sign(vx);
+    this.facing += (targetFacing - this.facing) * 0.2;
+    face.x = this.facing * 3;
+    face.y = 2 + (vy > 0 ? 1.5 : vy < 0 ? -1.5 : 0);
   }
 
   // スマホ用：バーチャルスティック + 「色」「加速」ボタン
@@ -167,7 +261,7 @@ export class MainScene extends Phaser.Scene {
     if (this.dashBtn) this.dashBtn.setFillStyle(0xffffff, 0.2);
   }
 
-  update() {
+  update(time) {
     const left = this.cursors.left.isDown || this.wasd.A.isDown;
     const right = this.cursors.right.isDown || this.wasd.D.isDown;
     const up = this.cursors.up.isDown || this.wasd.W.isDown;
@@ -185,5 +279,6 @@ export class MainScene extends Phaser.Scene {
     const speed = dash ? PLAYER_DASH_SPEED : PLAYER_SPEED;
     const velocity = new Phaser.Math.Vector2(vx, vy).normalize().scale(speed);
     this.player.body.setVelocity(velocity.x, velocity.y);
+    this.updateCuteCharacter(vx, vy, time);
   }
 }
