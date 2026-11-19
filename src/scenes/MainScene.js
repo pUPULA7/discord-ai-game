@@ -15,6 +15,13 @@ const STICK_DEAD_ZONE = 10; // これより小さい傾きは無視（px）
 const BUTTON_RADIUS = 44;
 const COLOR_BUTTON = { x: 590, y: 510 };
 const DASH_BUTTON = { x: 710, y: 430 };
+const BEAM_BUTTON = { x: 710, y: 540 };
+
+// ビーム
+const BEAM_SPEED = 700; // px/秒
+const BEAM_LENGTH = 28;
+const BEAM_WIDTH = 6;
+const BEAM_INTERVAL = 150; // 押しっぱなしのときの連射間隔（ミリ秒）
 
 // スマホ・タブレットなどタッチ操作の端末かどうか
 function isTouchDevice(game) {
@@ -64,10 +71,20 @@ export class MainScene extends Phaser.Scene {
       this.leftShiftDown = false;
     });
 
+    // ビーム：Z キー（押しっぱなしで連射）。最後に動いた向きへ飛ぶ
+    this.beamKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.Z);
+    this.beams = [];
+    this.lastBeamTime = -Infinity;
+    this.aimDir = new Phaser.Math.Vector2(1, 0); // 最初は右向き
+    this.touchBeamDown = false;
+    this.game.events.on(Phaser.Core.Events.BLUR, () => {
+      this.touchBeamDown = false;
+    });
+
     this.isTouch = isTouchDevice(this.game);
     const helpText = this.isTouch
-      ? '左下のスティックで移動　「加速」を押している間は加速　「色」で色チェンジ'
-      : '矢印キー / WASD で移動　左シフトで加速　スペースで色チェンジ';
+      ? '左下のスティックで移動　「加速」を押している間は加速　「色」で色チェンジ　「ビーム」で発射'
+      : '矢印キー / WASD で移動　左シフトで加速　スペースで色チェンジ　Z でビーム';
 
     // スマホのときだけタッチ操作 UI を出す
     this.stickVector = new Phaser.Math.Vector2(0, 0);
@@ -216,6 +233,15 @@ export class MainScene extends Phaser.Scene {
     });
     this.dashBtn = dashBtn;
 
+    const beamBtn = makeButton(BEAM_BUTTON, 'ビーム');
+    this.beamPointerId = null;
+    beamBtn.on('pointerdown', (pointer) => {
+      this.beamPointerId = pointer.id;
+      this.touchBeamDown = true;
+      beamBtn.setFillStyle(0xffffff, 0.45);
+    });
+    this.beamBtn = beamBtn;
+
     // スティック：画面の左半分（ボタン以外）を触ると反応
     this.input.on('pointerdown', (pointer, over) => {
       if (this.stickPointerId !== null || over.length > 0) return;
@@ -229,12 +255,57 @@ export class MainScene extends Phaser.Scene {
     const release = (pointer) => {
       if (pointer.id === this.stickPointerId) this.resetStick();
       if (pointer.id === this.dashPointerId) this.releaseDash();
+      if (pointer.id === this.beamPointerId) this.releaseBeam();
     };
     this.input.on('pointerup', release);
     this.input.on('pointerupoutside', release);
     this.game.events.on(Phaser.Core.Events.BLUR, () => {
       this.resetStick();
       this.releaseDash();
+      this.releaseBeam();
+    });
+  }
+
+  releaseBeam() {
+    this.beamPointerId = null;
+    this.touchBeamDown = false;
+    if (this.beamBtn) this.beamBtn.setFillStyle(0xffffff, 0.2);
+  }
+
+  // ビームを 1 発撃つ（プレイヤーの今の色・最後に動いた向き）
+  fireBeam() {
+    const dir = this.aimDir;
+    const color = PLAYER_COLORS[this.colorIndex];
+    const angle = Phaser.Math.RadToDeg(Math.atan2(dir.y, dir.x));
+    const startX = this.player.x + dir.x * 22;
+    const startY = this.player.y + dir.y * 22;
+    // 外側のぼんやり光 + 白い芯
+    const glow = this.add.rectangle(0, 0, BEAM_LENGTH + 8, BEAM_WIDTH + 8, color, 0.35);
+    const core = this.add.rectangle(0, 0, BEAM_LENGTH, BEAM_WIDTH, 0xffffff);
+    const beam = this.add.container(startX, startY, [glow, core]).setAngle(angle).setDepth(9);
+    beam.vx = dir.x * BEAM_SPEED;
+    beam.vy = dir.y * BEAM_SPEED;
+    this.beams.push(beam);
+    // 発射の反動でキャラがちょっと縮む
+    if (this.cute) {
+      this.tweens.add({ targets: this.cute.body, scale: { from: 0.9, to: 1 }, duration: 120 });
+    }
+  }
+
+  updateBeams(time, delta) {
+    const firing = this.beamKey.isDown || this.touchBeamDown;
+    if (firing && time - this.lastBeamTime >= BEAM_INTERVAL) {
+      this.lastBeamTime = time;
+      this.fireBeam();
+    }
+    const { width, height } = this.scale;
+    const margin = BEAM_LENGTH + 10;
+    this.beams = this.beams.filter((beam) => {
+      beam.x += beam.vx * delta / 1000;
+      beam.y += beam.vy * delta / 1000;
+      const out = beam.x < -margin || beam.x > width + margin || beam.y < -margin || beam.y > height + margin;
+      if (out) beam.destroy();
+      return !out;
     });
   }
 
@@ -261,7 +332,7 @@ export class MainScene extends Phaser.Scene {
     if (this.dashBtn) this.dashBtn.setFillStyle(0xffffff, 0.2);
   }
 
-  update(time) {
+  update(time, delta) {
     const left = this.cursors.left.isDown || this.wasd.A.isDown;
     const right = this.cursors.right.isDown || this.wasd.D.isDown;
     const up = this.cursors.up.isDown || this.wasd.W.isDown;
@@ -280,5 +351,9 @@ export class MainScene extends Phaser.Scene {
     const velocity = new Phaser.Math.Vector2(vx, vy).normalize().scale(speed);
     this.player.body.setVelocity(velocity.x, velocity.y);
     this.updateCuteCharacter(vx, vy, time);
+
+    // 動いている向きをビームの向きとして覚えておく
+    if (vx !== 0 || vy !== 0) this.aimDir.set(vx, vy).normalize();
+    this.updateBeams(time, delta);
   }
 }
