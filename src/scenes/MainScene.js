@@ -31,6 +31,19 @@ const ENEMY_SPAWN_INTERVAL = 1500; // ミリ秒
 const ENEMY_MAX = 8;
 const ENEMY_COLOR = 0x8e44ad;
 
+// アイテム（敵を倒すとドロップ。拾うと一定時間ビームが変化する）
+const ITEM_DROP_CHANCE = 0.35; // ドロップする確率
+const ITEM_RADIUS = 13;
+const ITEM_LIFETIME = 8000; // 地面に落ちてから消えるまで（ミリ秒）
+const POWER_DURATION = 10000; // 拾ってから効果が続く時間（ミリ秒）
+const ITEM_TYPES = {
+  spread: { name: '散弾', mark: '散', color: 0xff9f1c },
+  homing: { name: 'ホーミング弾', mark: '追', color: 0x2ee6d6 },
+};
+const SPREAD_ANGLES = [-16, 0, 16]; // 散弾の広がり（度）
+const HOMING_SPEED = 520; // ホーミング弾の速さ（px/秒）
+const HOMING_TURN_RATE = 6; // ホーミング弾が曲がる速さ（ラジアン/秒）
+
 // スマホ・タブレットなどタッチ操作の端末かどうか
 function isTouchDevice(game) {
   const coarse = typeof window !== 'undefined' && window.matchMedia
@@ -46,10 +59,14 @@ export class MainScene extends Phaser.Scene {
   create() {
     const { width, height } = this.scale;
 
+    // 背景（星空・星雲・惑星・流れ星）
+    this.createBackground();
+
     // 1P（最初からいる）。2P は 2P 用のキーを押すと参加する
     this.players = [this.createPlayer(0, width / 2, height / 2, 0)];
     this.beams = [];
     this.enemies = [];
+    this.items = [];
 
     // 入力：1P は 矢印キー + WASD / 2P は IJKL
     this.cursors = this.input.keyboard.createCursorKeys();
@@ -110,6 +127,11 @@ export class MainScene extends Phaser.Scene {
       color: '#ffe27a',
     }).setDepth(50);
     this.updateScoreText();
+    this.powerText = this.add.text(12, this.scoreText.y + 22, '', {
+      fontFamily: 'sans-serif',
+      fontSize: '15px',
+      color: '#ffffff',
+    }).setDepth(50);
 
     // 敵：一定間隔で画面の端から出てくる
     this.time.addEvent({
@@ -140,6 +162,8 @@ export class MainScene extends Phaser.Scene {
       dash: false,
       score: 0,
       label: null,
+      power: null, // 'spread' / 'homing' / null（ふつうのビーム）
+      powerUntil: 0,
     };
     player.cute = this.createCuteCharacter(x, y, PLAYER_COLORS[colorIndex]);
     // 2 人で遊んでいるときに見分けられるよう頭の上に「1P」「2P」を出す
@@ -337,23 +361,58 @@ export class MainScene extends Phaser.Scene {
     if (this.beamBtn) this.beamBtn.setFillStyle(0xffffff, 0.2);
   }
 
-  // ビームを 1 発撃つ（そのプレイヤーの今の色・最後に動いた向き）
+  // ビームを撃つ（今のアイテム効果に応じて ふつう / 散弾 / ホーミング弾）
   fireBeam(player) {
-    const dir = player.aimDir;
-    const color = PLAYER_COLORS[player.colorIndex];
-    const angle = Phaser.Math.RadToDeg(Math.atan2(dir.y, dir.x));
-    const startX = player.rect.x + dir.x * 22;
-    const startY = player.rect.y + dir.y * 22;
-    // 外側のぼんやり光 + 白い芯
-    const glow = this.add.rectangle(0, 0, BEAM_LENGTH + 8, BEAM_WIDTH + 8, color, 0.35);
-    const core = this.add.rectangle(0, 0, BEAM_LENGTH, BEAM_WIDTH, 0xffffff);
-    const beam = this.add.container(startX, startY, [glow, core]).setAngle(angle).setDepth(9);
-    beam.vx = dir.x * BEAM_SPEED;
-    beam.vy = dir.y * BEAM_SPEED;
-    beam.owner = player;
-    this.beams.push(beam);
+    const baseAngle = Math.atan2(player.aimDir.y, player.aimDir.x);
+    if (player.power === 'spread') {
+      SPREAD_ANGLES.forEach((deg) => this.createBeam(player, baseAngle + Phaser.Math.DegToRad(deg), false));
+    } else {
+      this.createBeam(player, baseAngle, player.power === 'homing');
+    }
     // 発射の反動でキャラがちょっと縮む
     this.tweens.add({ targets: player.cute.body, scale: { from: 0.9, to: 1 }, duration: 120 });
+  }
+
+  // ビームを 1 本作る（そのプレイヤーの今の色・指定した向き）
+  createBeam(player, angle, homing) {
+    const color = PLAYER_COLORS[player.colorIndex];
+    const startX = player.rect.x + Math.cos(angle) * 22;
+    const startY = player.rect.y + Math.sin(angle) * 22;
+    // 外側のぼんやり光 + 白い芯（ホーミング弾はアイテムの色の輪っか付き）
+    const parts = [
+      this.add.rectangle(0, 0, BEAM_LENGTH + 8, BEAM_WIDTH + 8, color, 0.35),
+      this.add.rectangle(0, 0, BEAM_LENGTH, BEAM_WIDTH, 0xffffff),
+    ];
+    if (homing) parts.push(this.add.circle(BEAM_LENGTH / 2, 0, 5, ITEM_TYPES.homing.color));
+    const beam = this.add.container(startX, startY, parts)
+      .setAngle(Phaser.Math.RadToDeg(angle)).setDepth(9);
+    const speed = homing ? HOMING_SPEED : BEAM_SPEED;
+    beam.vx = Math.cos(angle) * speed;
+    beam.vy = Math.sin(angle) * speed;
+    beam.homing = homing;
+    beam.owner = player;
+    this.beams.push(beam);
+    return beam;
+  }
+
+  // ホーミング弾：いちばん近い敵のほうへ少しずつ曲がる
+  steerHomingBeam(beam, delta) {
+    let target = null;
+    let best = Infinity;
+    this.enemies.forEach((enemy) => {
+      if (enemy.dead) return;
+      const d = Phaser.Math.Distance.Between(beam.x, beam.y, enemy.x, enemy.y);
+      if (d < best) { best = d; target = enemy; }
+    });
+    if (!target) return;
+    const current = Math.atan2(beam.vy, beam.vx);
+    const wanted = Math.atan2(target.y - beam.y, target.x - beam.x);
+    const diff = Phaser.Math.Angle.Wrap(wanted - current);
+    const maxTurn = HOMING_TURN_RATE * delta / 1000;
+    const next = current + Phaser.Math.Clamp(diff, -maxTurn, maxTurn);
+    beam.vx = Math.cos(next) * HOMING_SPEED;
+    beam.vy = Math.sin(next) * HOMING_SPEED;
+    beam.rotation = next;
   }
 
   updateBeams(time, delta) {
@@ -370,6 +429,7 @@ export class MainScene extends Phaser.Scene {
     const { width, height } = this.scale;
     const margin = BEAM_LENGTH + 10;
     this.beams = this.beams.filter((beam) => {
+      if (beam.homing) this.steerHomingBeam(beam, delta);
       beam.x += beam.vx * delta / 1000;
       beam.y += beam.vy * delta / 1000;
       const out = beam.x < -margin || beam.x > width + margin || beam.y < -margin || beam.y > height + margin;
@@ -434,6 +494,10 @@ export class MainScene extends Phaser.Scene {
       byPlayer.score += 1;
       this.updateScoreText();
     }
+    // ときどきアイテムを落とす（散弾 / ホーミング弾）
+    if (Math.random() < ITEM_DROP_CHANCE) {
+      this.spawnItem(enemy.x, enemy.y, Math.random() < 0.5 ? 'spread' : 'homing');
+    }
     for (let i = 0; i < 8; i += 1) {
       const a = (Math.PI * 2 * i) / 8;
       const dot = this.add.circle(enemy.x, enemy.y, 4, i % 2 ? ENEMY_COLOR : 0xffffff).setDepth(9);
@@ -480,6 +544,231 @@ export class MainScene extends Phaser.Scene {
       const ey = Math.sin(angle) * 1.5;
       enemy.pupils[0].setPosition(-6 + ex, -2 + ey);
       enemy.pupils[1].setPosition(6 + ex, -2 + ey);
+    });
+  }
+
+  // アイテムを置く（画面内に収める）。ふわふわ浮いて、時間がたつと点滅して消える
+  spawnItem(x, y, type) {
+    const { width, height } = this.scale;
+    const ix = Phaser.Math.Clamp(x, ITEM_RADIUS + 4, width - ITEM_RADIUS - 4);
+    const iy = Phaser.Math.Clamp(y, ITEM_RADIUS + 4, height - ITEM_RADIUS - 4);
+    const def = ITEM_TYPES[type];
+    const glow = this.add.circle(0, 0, ITEM_RADIUS + 6, def.color, 0.3);
+    const orb = this.add.circle(0, 0, ITEM_RADIUS, def.color).setStrokeStyle(2, 0xffffff);
+    const mark = this.add.text(0, 0, def.mark, {
+      fontFamily: 'sans-serif',
+      fontSize: '15px',
+      fontStyle: 'bold',
+      color: '#1d1d33',
+    }).setOrigin(0.5);
+    const inner = this.add.container(0, 0, [glow, orb, mark]);
+    const item = this.add.container(ix, iy, [inner]).setDepth(7);
+    item.type = type;
+    item.expireAt = this.time.now + ITEM_LIFETIME;
+    item.inner = inner;
+    this.tweens.add({ targets: inner, y: -4, duration: 600, yoyo: true, repeat: -1, ease: 'Sine.InOut' });
+    this.tweens.add({ targets: glow, scale: 1.25, alpha: 0.12, duration: 700, yoyo: true, repeat: -1 });
+    this.tweens.add({ targets: item, scale: { from: 0, to: 1 }, duration: 250, ease: 'Back.Out' });
+    this.items.push(item);
+  }
+
+  // アイテムを拾う判定・消える判定・効果時間の管理
+  updateItems(time) {
+    this.items = this.items.filter((item) => {
+      const picker = this.players.find((p) => Phaser.Math.Distance.Between(p.rect.x, p.rect.y, item.x, item.y)
+        < ITEM_RADIUS + PLAYER_SIZE / 2 + 2);
+      if (picker) {
+        this.pickUpItem(picker, item, time);
+        return false;
+      }
+      const left = item.expireAt - time;
+      if (left <= 0) {
+        item.destroy();
+        return false;
+      }
+      // 残り 2 秒で点滅
+      item.setAlpha(left < 2000 && Math.floor(left / 120) % 2 === 0 ? 0.3 : 1);
+      return true;
+    });
+    // 効果が切れたらふつうのビームに戻る
+    this.players.forEach((p) => {
+      if (p.power && time >= p.powerUntil) p.power = null;
+    });
+    this.updatePowerText(time);
+  }
+
+  pickUpItem(player, item, time) {
+    const def = ITEM_TYPES[item.type];
+    player.power = item.type; // 別の種類を拾ったら切り替え、同じ種類なら時間をのばす
+    player.powerUntil = time + POWER_DURATION;
+    const { x, y } = item;
+    item.destroy();
+    // キラッと光る演出 + 「散弾!」などの文字
+    const ring = this.add.circle(x, y, ITEM_RADIUS, def.color, 0).setStrokeStyle(3, def.color).setDepth(9);
+    this.tweens.add({ targets: ring, scale: 3, alpha: 0, duration: 350, onComplete: () => ring.destroy() });
+    const hex = `#${def.color.toString(16).padStart(6, '0')}`;
+    const pop = this.add.text(x, y - 20, `${def.name}!`, {
+      fontFamily: 'sans-serif',
+      fontSize: '16px',
+      fontStyle: 'bold',
+      color: hex,
+      stroke: '#1d1d33',
+      strokeThickness: 4,
+    }).setOrigin(0.5).setDepth(12);
+    this.tweens.add({ targets: pop, y: y - 50, alpha: 0, duration: 900, onComplete: () => pop.destroy() });
+    this.tweens.add({ targets: player.cute.body, scale: { from: 1.25, to: 1 }, duration: 250, ease: 'Back.Out' });
+  }
+
+  updatePowerText(time) {
+    const parts = this.players
+      .filter((p) => p.power)
+      .map((p) => {
+        const sec = Math.ceil((p.powerUntil - time) / 1000);
+        const who = this.players.length > 1 ? `${p.index + 1}P ` : '';
+        return `${who}${ITEM_TYPES[p.power].name} あと${sec}秒`;
+      });
+    const text = parts.length ? `ビーム変化中　${parts.join('　')}` : '';
+    if (text !== this.powerText.text) this.powerText.setText(text);
+  }
+
+  // 背景：夜空のグラデーション + 星雲 + 遠くの惑星 + またたく星（3 層でゆっくり流れる）+ ときどき流れ星
+  createBackground() {
+    const { width, height } = this.scale;
+    if (!this.textures.exists('bg-sky')) {
+      const tex = this.textures.createCanvas('bg-sky', width, height);
+      const ctx = tex.getContext();
+      // 夜空のグラデーション（上は深い紺、下はむらさき寄り）
+      const sky = ctx.createLinearGradient(0, 0, 0, height);
+      sky.addColorStop(0, '#0b1030');
+      sky.addColorStop(0.55, '#1d2b53');
+      sky.addColorStop(1, '#3a1f5d');
+      ctx.fillStyle = sky;
+      ctx.fillRect(0, 0, width, height);
+      // 星雲（ぼんやりした色の雲）
+      const nebula = (x, y, r, color) => {
+        const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+        g.addColorStop(0, color);
+        g.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = g;
+        ctx.fillRect(x - r, y - r, r * 2, r * 2);
+      };
+      nebula(180, 160, 260, 'rgba(255, 119, 168, 0.22)');
+      nebula(620, 420, 300, 'rgba(41, 173, 255, 0.2)');
+      nebula(420, 260, 200, 'rgba(131, 118, 156, 0.18)');
+      nebula(720, 90, 160, 'rgba(0, 228, 54, 0.08)');
+      // 遠くの惑星（輪っか付き）
+      const px = 655;
+      const py = 150;
+      const pr = 46;
+      const planet = ctx.createRadialGradient(px - 16, py - 16, 6, px, py, pr);
+      planet.addColorStop(0, '#ffd59e');
+      planet.addColorStop(0.6, '#e07a5f');
+      planet.addColorStop(1, '#7a2e4a');
+      ctx.save();
+      ctx.globalAlpha = 0.85;
+      ctx.strokeStyle = 'rgba(255, 226, 180, 0.5)';
+      ctx.lineWidth = 5;
+      ctx.beginPath(); // 輪っか（奥側）
+      ctx.ellipse(px, py, pr * 1.9, pr * 0.45, -0.35, Math.PI, Math.PI * 2);
+      ctx.stroke();
+      ctx.fillStyle = planet;
+      ctx.beginPath();
+      ctx.arc(px, py, pr, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath(); // 輪っか（手前側）
+      ctx.ellipse(px, py, pr * 1.9, pr * 0.45, -0.35, 0, Math.PI);
+      ctx.stroke();
+      ctx.restore();
+      // 小さな月
+      ctx.fillStyle = 'rgba(220, 230, 255, 0.55)';
+      ctx.beginPath();
+      ctx.arc(110, 470, 14, 0, Math.PI * 2);
+      ctx.fill();
+      tex.refresh();
+    }
+    this.add.image(0, 0, 'bg-sky').setOrigin(0).setDepth(-20);
+
+    // またたく星（奥ほど小さく遅い）
+    const layers = [
+      { count: 70, size: [0.6, 1.2], speed: 4, alpha: 0.5 },
+      { count: 40, size: [1, 1.8], speed: 9, alpha: 0.75 },
+      { count: 18, size: [1.6, 2.4], speed: 16, alpha: 1 },
+    ];
+    const starColors = [0xffffff, 0xfff1c1, 0xc2e5ff, 0xffd6e8];
+    this.bgStars = [];
+    layers.forEach((layer, li) => {
+      for (let i = 0; i < layer.count; i += 1) {
+        const star = this.add.circle(
+          Math.random() * width,
+          Math.random() * height,
+          Phaser.Math.FloatBetween(layer.size[0], layer.size[1]),
+          Phaser.Utils.Array.GetRandom(starColors),
+          layer.alpha,
+        ).setDepth(-19 + li);
+        star.speed = layer.speed;
+        this.tweens.add({
+          targets: star,
+          alpha: layer.alpha * 0.25,
+          duration: Phaser.Math.Between(700, 2200),
+          yoyo: true,
+          repeat: -1,
+          delay: Phaser.Math.Between(0, 2000),
+          ease: 'Sine.InOut',
+        });
+        this.bgStars.push(star);
+      }
+    });
+    // 大きめのキラキラ星（十字の光）
+    for (let i = 0; i < 6; i += 1) {
+      const sparkle = this.add.star(
+        Phaser.Math.Between(30, width - 30),
+        Phaser.Math.Between(30, height - 30),
+        4, 1.2, 7, 0xffffff, 0.9,
+      ).setDepth(-16);
+      this.tweens.add({
+        targets: sparkle,
+        scale: { from: 0.4, to: 1.1 },
+        alpha: { from: 0.3, to: 1 },
+        angle: 45,
+        duration: Phaser.Math.Between(900, 1600),
+        yoyo: true,
+        repeat: -1,
+        delay: Phaser.Math.Between(0, 1500),
+      });
+    }
+
+    // ときどき流れ星
+    this.time.addEvent({
+      delay: 3500,
+      loop: true,
+      callback: () => { if (Math.random() < 0.7) this.shootingStar(); },
+    });
+  }
+
+  shootingStar() {
+    const { width, height } = this.scale;
+    const x = Phaser.Math.Between(width * 0.2, width);
+    const y = Phaser.Math.Between(0, height * 0.4);
+    const tail = this.add.rectangle(0, 0, 70, 2, 0xffffff, 0.8).setOrigin(0, 0.5);
+    const head = this.add.circle(0, 0, 2.5, 0xffffff);
+    const s = this.add.container(x, y, [tail, head]).setAngle(150).setDepth(-15).setAlpha(0);
+    const dist = Phaser.Math.Between(220, 360);
+    this.tweens.add({
+      targets: s,
+      x: x - Math.cos(Phaser.Math.DegToRad(30)) * dist,
+      y: y + Math.sin(Phaser.Math.DegToRad(30)) * dist,
+      alpha: { from: 1, to: 0 },
+      duration: 900,
+      ease: 'Quad.In',
+      onComplete: () => s.destroy(),
+    });
+  }
+
+  updateBackground(delta) {
+    const { width } = this.scale;
+    this.bgStars.forEach((star) => {
+      star.x -= star.speed * delta / 1000;
+      if (star.x < -3) star.x = width + 3;
     });
   }
 
@@ -549,5 +838,7 @@ export class MainScene extends Phaser.Scene {
     });
     this.updateBeams(time, delta);
     this.updateEnemies(time, delta);
+    this.updateItems(time);
+    this.updateBackground(delta);
   }
 }
