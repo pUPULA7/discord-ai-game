@@ -89,6 +89,12 @@ const HURT_DISTANCE = ENEMY_RADIUS + 18; // 敵とこれより近いと「触れ
 const MAX_BEAMS = 300; // 重ねがけで弾が増えすぎないための上限
 const TEST_ENEMY_MAX = 30; // テストパネルの「敵+5」で出せる上限
 
+// 体力（敵に触れると 1 ずつ減り、0 になるとダウン。全員ダウンでゲームオーバー）
+const PLAYER_MAX_HP = 5;
+const INVINCIBLE_TIME = 1500; // ダメージを受けたあと無敵になる時間（ミリ秒）
+const KNOCKBACK_DIST = 60; // ダメージを受けたとき、触れていた敵を押し返す距離（px）
+const HP_ROW_H = 24; // 体力ハートの行の高さ（「たおした敵」の下に 1P・2P の順で並ぶ）
+
 // 必殺技
 const SPECIAL_MAX = 10; // 敵をこの数たおすとゲージが満タンになり、必殺技が使える
 const SPECIAL_CUTIN_TIME = 1300; // カットイン演出の長さ（ミリ秒）。この間は敵が止まる
@@ -140,6 +146,8 @@ export class MainScene extends Phaser.Scene {
 
     // 必殺技：X キー = 1P / P キー = 2P（ゲージが満タンのときだけ）
     this.cutinActive = false;
+    this.gameOver = false;
+    this.physics.resume(); // リトライ直後（ゲームオーバーで止めた物理を戻す）
     this.input.keyboard.on('keydown-X', (event) => {
       if (!event.repeat) this.trySpecial(this.players[0]);
     });
@@ -171,10 +179,13 @@ export class MainScene extends Phaser.Scene {
       if (event.code === 'ShiftRight' && this.players[1]) this.players[1].shiftDown = false;
     });
     // ウィンドウからフォーカスが外れたら押しっぱなし扱いを解除
-    this.game.events.on(Phaser.Core.Events.BLUR, () => {
+    const onBlur = () => {
       this.players.forEach((p) => { p.shiftDown = false; });
       this.touchBeamDown = false;
-    });
+    };
+    this.game.events.on(Phaser.Core.Events.BLUR, onBlur);
+    // リトライ（シーンの再スタート）のときにゲーム全体のイベントを外す
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.game.events.off(Phaser.Core.Events.BLUR, onBlur));
 
     this.touchBeamDown = false;
 
@@ -214,6 +225,9 @@ export class MainScene extends Phaser.Scene {
     // 必殺ゲージ（画面下）とカットイン演出の準備
     this.createSpecialUI();
 
+    // 体力ハート（「たおした敵」の下）・ダメージ時の赤いフラッシュ
+    this.createHpUI();
+
     // テスト用パネル（右上の「テスト」ボタン / T キー）
     this.createTestUI();
 
@@ -222,7 +236,7 @@ export class MainScene extends Phaser.Scene {
       delay: ENEMY_SPAWN_INTERVAL,
       loop: true,
       callback: () => {
-        if (this.enemies.length < ENEMY_MAX && !this.cutinActive) this.spawnEnemy();
+        if (this.enemies.length < ENEMY_MAX && !this.cutinActive && !this.gameOver) this.spawnEnemy();
       },
     });
   }
@@ -246,6 +260,9 @@ export class MainScene extends Phaser.Scene {
       dash: false,
       score: 0,
       special: 0, // 必殺ゲージ（0〜SPECIAL_MAX）
+      hp: PLAYER_MAX_HP, // 体力（0 でダウン）
+      invincibleUntil: 0, // この時刻までは無敵（ダメージ直後）
+      down: false, // 体力 0 でダウン中
       label: null,
       powers: {}, // 持っているアイテム効果 { 種類: 効果が切れる時刻 }（重ねがけ可。テストで付けたものは Infinity）
       sats: null, // えいせいの玉
@@ -271,6 +288,7 @@ export class MainScene extends Phaser.Scene {
     this.players.push(p2);
     this.players[0].label.setVisible(true);
     this.updateSpecialUI();
+    this.updateHpUI();
     this.tweens.add({ targets: p2.cute.container, scale: { from: 0, to: 1 }, duration: 300, ease: 'Back.Out' });
     this.updateScoreText();
     return p2;
@@ -387,10 +405,16 @@ export class MainScene extends Phaser.Scene {
     face.x = player.facing * 3;
     face.y = 2 + (vy > 0 ? 1.5 : vy < 0 ? -1.5 : 0);
     // 敵に触れている間は痛そうな顔 + ぷるぷる震える
-    const hurt = this.enemies.some((e) => !e.dead
+    const touching = this.enemies.filter((e) => !e.dead
       && Phaser.Math.Distance.Between(e.x, e.y, player.rect.x, player.rect.y) < HURT_DISTANCE);
+    if (touching.length && !player.down) this.damagePlayer(player, touching, time);
+    const hurt = player.down || touching.length > 0;
     this.setHurtFace(player.cute, hurt);
-    if (hurt) {
+    // 無敵中はチカチカ点滅（ダメージを受けた合図）
+    if (player.down) container.setAlpha(0.4);
+    else if (time < player.invincibleUntil) container.setAlpha(Math.floor(time / 80) % 2 ? 0.25 : 1);
+    else container.setAlpha(1);
+    if (hurt && !player.down) {
       container.x += Math.sin(time * 0.09) * 1.5;
       player.cute.sweat.y = Math.sin(time * 0.012) * 1.5;
     }
@@ -477,11 +501,13 @@ export class MainScene extends Phaser.Scene {
     };
     this.input.on('pointerup', release);
     this.input.on('pointerupoutside', release);
-    this.game.events.on(Phaser.Core.Events.BLUR, () => {
+    const onBlur = () => {
       this.resetStick();
       this.releaseDash();
       this.releaseBeam();
-    });
+    };
+    this.game.events.on(Phaser.Core.Events.BLUR, onBlur);
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.game.events.off(Phaser.Core.Events.BLUR, onBlur));
   }
 
   releaseBeam() {
@@ -496,6 +522,7 @@ export class MainScene extends Phaser.Scene {
 
   // ビームを撃つ（持っているアイテム効果をすべて重ねて反映する）
   fireBeam(player) {
+    if (player.down || this.gameOver) return;
     const has = (t) => this.hasPower(player, t);
     const base = Math.atan2(player.aimDir.y, player.aimDir.x);
     // 撃つ向き：全方位 > （正面 + うしろ + よこ）。散弾はそれぞれを 3 方向に広げる
@@ -863,6 +890,7 @@ export class MainScene extends Phaser.Scene {
       let target = null;
       let best = Infinity;
       this.players.forEach((p) => {
+        if (p.down) return; // ダウンしたプレイヤーは狙わない
         const d = Phaser.Math.Distance.Between(enemy.x, enemy.y, p.rect.x, p.rect.y);
         if (d < best) { best = d; target = p; }
       });
@@ -928,7 +956,7 @@ export class MainScene extends Phaser.Scene {
       });
     }
     this.items = this.items.filter((item) => {
-      const picker = this.players.find((p) => Phaser.Math.Distance.Between(p.rect.x, p.rect.y, item.x, item.y)
+      const picker = this.players.find((p) => !p.down && Phaser.Math.Distance.Between(p.rect.x, p.rect.y, item.x, item.y)
         < ITEM_RADIUS + PLAYER_SIZE / 2 + 2);
       if (picker) {
         this.pickUpItem(picker, item, time);
@@ -1040,11 +1068,12 @@ export class MainScene extends Phaser.Scene {
       { label: '全部OFF', color: 0xff004d, tap: () => this.setAllTestPowers(false) },
       { label: '敵 +5', color: 0x8e44ad, tap: () => this.spawnTestEnemies(5) },
       { label: '必殺MAX', color: 0xffcc00, tap: () => this.players.forEach((p) => this.addSpecial(p, SPECIAL_MAX)) },
+      { label: '体力MAX', color: 0xff3b5c, tap: () => this.healAll() },
       { label: '閉じる', color: 0xffffff, tap: () => this.toggleTestPanel() },
     ];
     bottom.forEach((b, i) => {
-      const x = 100 + i * 150;
-      makeBtn(x, 400, 136, 40, b.color, b.tap);
+      const x = 75 + i * 130;
+      makeBtn(x, 400, 120, 40, b.color, b.tap);
       panel.add(this.add.text(x, 400, b.label, { ...font, fontSize: '16px', fontStyle: 'bold' }).setOrigin(0.5));
     });
     panel.add(this.add.text(400, 455, '効果は参加中のプレイヤー全員に付きます。T / Esc / 「閉じる」でパネルを閉じて遊べます', {
@@ -1332,7 +1361,7 @@ export class MainScene extends Phaser.Scene {
 
   // ゲージが満タンなら必殺技を発動（カットイン → 画面の敵を全部やっつける）
   trySpecial(player) {
-    if (!player || this.cutinActive || player.special < SPECIAL_MAX) return;
+    if (!player || player.down || this.gameOver || this.cutinActive || player.special < SPECIAL_MAX) return;
     player.special = 0;
     this.updateSpecialUI();
     this.cutinActive = true;
@@ -1569,6 +1598,153 @@ export class MainScene extends Phaser.Scene {
     });
   }
 
+  // 体力の表示（右上にハート）と、ダメージ時に画面のふちが赤く光る演出
+  createHpUI() {
+    // ハートのテクスチャ（白で描いて色はティントで変える）
+    if (!this.textures.exists('heart')) {
+      const g = this.make.graphics({ x: 0, y: 0, add: false });
+      g.fillStyle(0xffffff, 1);
+      g.fillCircle(6, 6, 6);
+      g.fillCircle(16, 6, 6);
+      g.fillTriangle(0.5, 8.5, 21.5, 8.5, 11, 20);
+      g.generateTexture('heart', 22, 21);
+      g.destroy();
+    }
+    this.hpTop = this.scoreText.y + 22;
+    this.hpRows = [0, 1].map((i) => {
+      const y = this.hpTop + 10 + i * HP_ROW_H;
+      const label = this.add.text(12, y, '', {
+        fontFamily: 'sans-serif', fontSize: '15px', fontStyle: 'bold', color: '#ffffff',
+        stroke: '#0b1030', strokeThickness: 3,
+      }).setOrigin(0, 0.5).setDepth(50);
+      const hearts = [];
+      for (let h = 0; h < PLAYER_MAX_HP; h += 1) {
+        hearts.push(this.add.image(92 + h * 25, y, 'heart').setDepth(50));
+      }
+      return { label, hearts };
+    });
+    const { width, height } = this.scale;
+    // 画面のふちの赤いフラッシュ（ダメージ時に一瞬光る）
+    this.damageFlash = this.add.graphics().setDepth(140).setAlpha(0);
+    for (let k = 0; k < 6; k += 1) {
+      const t = 6 + k * 6;
+      this.damageFlash.lineStyle(12, 0xff0033, 0.5 - k * 0.07);
+      this.damageFlash.strokeRect(t, t, width - t * 2, height - t * 2);
+    }
+    this.updateHpUI();
+  }
+
+  updateHpUI() {
+    if (!this.hpRows) return;
+    this.hpRows.forEach((row, i) => {
+      const p = this.players[i];
+      row.label.setVisible(!!p);
+      row.hearts.forEach((h, k) => {
+        h.setVisible(!!p);
+        if (!p) return;
+        const full = k < p.hp;
+        h.setTint(full ? 0xff3b5c : 0x3a3f5c);
+        h.setAlpha(full ? 1 : 0.7);
+      });
+      if (p) row.label.setText(this.players.length > 1 ? `${i + 1}P 体力` : '体力');
+    });
+    // アイテム効果の表示はハートの下に
+    if (this.powerText) this.powerText.setY(this.hpTop + this.players.length * HP_ROW_H + 2);
+  }
+
+  // 敵に触れたら体力 -1（直後は少し無敵。触れていた敵は押し返す）
+  damagePlayer(player, touching, time) {
+    if (this.cutinActive || time < player.invincibleUntil) return; // 必殺技の演出中・無敵中はダメージ無し
+    player.hp = Math.max(0, player.hp - 1);
+    player.invincibleUntil = time + INVINCIBLE_TIME;
+    const { x, y } = player.rect;
+    // 触れていた敵を押し返す（1 回の接触で 1 ダメージにするため）
+    touching.forEach((e) => {
+      const a = Math.atan2(e.y - y, e.x - x);
+      this.tweens.add({
+        targets: e, x: e.x + Math.cos(a) * KNOCKBACK_DIST, y: e.y + Math.sin(a) * KNOCKBACK_DIST,
+        duration: 220, ease: 'Quad.Out',
+      });
+    });
+    // 自機：赤く光ってぎゅっと縮む + 「-1」
+    const body = player.cute.body;
+    const flash = this.add.circle(x, y, 26, 0xff2244, 0.75).setDepth(12);
+    this.tweens.add({ targets: flash, scale: 1.8, alpha: 0, duration: 320, onComplete: () => flash.destroy() });
+    this.tweens.add({ targets: body, scale: { from: 0.7, to: 1 }, duration: 260, ease: 'Back.Out' });
+    const pop = this.add.text(x, y - 28, '-1', {
+      fontFamily: 'sans-serif', fontSize: '22px', fontStyle: 'bold', color: '#ff4466',
+      stroke: '#ffffff', strokeThickness: 4,
+    }).setOrigin(0.5).setDepth(60);
+    this.tweens.add({ targets: pop, y: y - 60, alpha: 0, duration: 700, onComplete: () => pop.destroy() });
+    // 画面：ゆれる + ふちが赤く光る
+    this.cameras.main.shake(180, 0.008);
+    this.damageFlash.setAlpha(1);
+    this.tweens.killTweensOf(this.damageFlash);
+    this.tweens.add({ targets: this.damageFlash, alpha: 0, duration: 450 });
+    // UI：減ったハートが弾けて、残りのハートがぷるっと震える
+    this.updateHpUI();
+    const row = this.hpRows[player.index];
+    const lost = row.hearts[player.hp];
+    if (lost) {
+      const ghost = this.add.image(lost.x, lost.y, 'heart').setTint(0xff3b5c).setDepth(51);
+      this.tweens.add({ targets: ghost, scale: 2.2, alpha: 0, duration: 450, onComplete: () => ghost.destroy() });
+    }
+    row.hearts.forEach((h) => {
+      this.tweens.killTweensOf(h);
+      h.setScale(1);
+      this.tweens.add({ targets: h, scale: { from: 1.35, to: 1 }, duration: 300, ease: 'Back.Out' });
+    });
+    this.tweens.add({ targets: row.label, x: { from: row.label.x - 4, to: row.label.x }, duration: 200, ease: 'Bounce.Out' });
+
+    if (player.hp <= 0) {
+      player.down = true;
+      player.rect.body.setVelocity(0, 0);
+      player.cute.container.setAlpha(0.4);
+      if (this.players.every((p) => p.down)) this.triggerGameOver();
+    }
+  }
+
+  // テスト用：全員の体力を満タンに（ダウンしていても復活）
+  healAll() {
+    this.players.forEach((p) => { p.hp = PLAYER_MAX_HP; p.down = false; });
+    this.updateHpUI();
+  }
+
+  // 全員の体力が 0 → ゲームオーバー（R キー / タップ / クリックでリトライ）
+  triggerGameOver() {
+    if (this.gameOver) return;
+    this.gameOver = true;
+    this.physics.pause();
+    if (this.testPanel && this.testPanel.visible) this.toggleTestPanel();
+    this.releaseBeam();
+    this.cameras.main.shake(300, 0.012);
+    const { width, height } = this.scale;
+    const font = { fontFamily: 'sans-serif', color: '#ffffff' };
+    const shade = this.add.rectangle(width / 2, height / 2, width, height, 0x000000, 0.6).setDepth(300).setAlpha(0);
+    const title = this.add.text(width / 2, height / 2 - 60, 'GAME OVER', {
+      ...font, fontSize: '64px', fontStyle: 'bold', color: '#ff4466', stroke: '#ffffff', strokeThickness: 6,
+    }).setOrigin(0.5).setDepth(301).setScale(0.3);
+    const scores = this.players.map((p) => (this.players.length > 1 ? `${p.index + 1}P: ${p.score}` : `${p.score}`));
+    const result = this.add.text(width / 2, height / 2 + 15, `たおした敵　${scores.join('　')}`, {
+      ...font, fontSize: '22px', color: '#ffe27a',
+    }).setOrigin(0.5).setDepth(301).setAlpha(0);
+    const retry = this.add.text(width / 2, height / 2 + 65,
+      this.isTouch ? 'タップでリトライ' : 'R キー / クリックでリトライ', {
+        ...font, fontSize: '20px',
+      }).setOrigin(0.5).setDepth(301).setAlpha(0);
+    this.tweens.add({ targets: shade, alpha: 1, duration: 400 });
+    this.tweens.add({ targets: title, scale: 1, duration: 500, ease: 'Back.Out' });
+    this.tweens.add({ targets: [result, retry], alpha: 1, duration: 400, delay: 400 });
+    this.tweens.add({ targets: retry, alpha: 0.35, duration: 600, delay: 900, yoyo: true, repeat: -1 });
+    // すぐ押しっぱなしの操作でリトライしてしまわないよう、少し待ってから受け付ける
+    this.time.delayedCall(800, () => {
+      const restart = () => this.scene.restart();
+      this.input.keyboard.once('keydown-R', restart);
+      shade.setInteractive();
+      shade.once('pointerdown', restart);
+    });
+  }
+
   updateScoreText() {
     if (!this.scoreText) return;
     const parts = this.players.map((p) => (this.players.length > 1 ? `${p.index + 1}P: ${p.score}` : `${p.score}`));
@@ -1623,7 +1799,17 @@ export class MainScene extends Phaser.Scene {
   }
 
   update(time, delta) {
+    if (this.gameOver) {
+      // ゲームオーバー中は背景だけ動かす
+      this.updateBackground(delta);
+      return;
+    }
     this.players.forEach((player) => {
+      if (player.down) {
+        player.rect.body.setVelocity(0, 0);
+        this.updateCuteCharacter(player, 0, 0, time);
+        return;
+      }
       const { vx, vy, dash } = this.readMove(player);
       player.dash = dash;
       const speed = dash ? PLAYER_DASH_SPEED : PLAYER_SPEED;
