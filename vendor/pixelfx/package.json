@@ -1,0 +1,8 @@
+{
+  "name": "pixelfx",
+  "version": "0.3.1",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "description": "Vendored copy of https://github.com/patch-gg/pixelfx (commit 5294518). See VENDORED.md."
+}
