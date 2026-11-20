@@ -24,6 +24,10 @@ const BEAM_LENGTH = 28;
 const BEAM_WIDTH = 6;
 const BEAM_INTERVAL = 150; // 押しっぱなしのときの連射間隔（ミリ秒）
 
+// ゲーム時間・スコア
+const GAME_TIME = 15000; // 1 ゲームの時間（ミリ秒）
+const SCORE_PER_ENEMY = 100; // 敵 1 体あたりのスコア
+
 // 敵
 const ENEMY_RADIUS = 16;
 const ENEMY_SPEED = 70; // px/秒
@@ -151,6 +155,8 @@ export class MainScene extends Phaser.Scene {
     // 必殺技：X キー = 1P / P キー = 2P（ゲージが満タンのときだけ）
     this.cutinActive = false;
     this.gameOver = false;
+    this.countdownActive = true; // 3, 2, 1 のカウントダウン中は動けない・敵も出ない
+    this.timeLeft = GAME_TIME;
     this.physics.resume(); // リトライ直後（ゲームオーバーで止めた物理を戻す）
     this.input.keyboard.on('keydown-X', (event) => {
       if (!event.repeat) this.trySpecial(this.players[0]);
@@ -209,7 +215,7 @@ export class MainScene extends Phaser.Scene {
       fontSize: '16px',
       color: '#ffffff',
       lineSpacing: 4,
-      wordWrap: { width: 680, useAdvancedWrap: true },
+      wordWrap: { width: 600, useAdvancedWrap: true }, // 右上の のこり時間 と重ならない幅
     }).setDepth(50);
     this.scoreText = this.add.text(12, help.y + help.height + 6, '', {
       fontFamily: 'sans-serif',
@@ -240,8 +246,59 @@ export class MainScene extends Phaser.Scene {
       delay: ENEMY_SPAWN_INTERVAL,
       loop: true,
       callback: () => {
-        if (this.enemies.length < ENEMY_MAX && !this.cutinActive && !this.gameOver) this.spawnEnemy();
+        if (this.enemies.length < ENEMY_MAX && !this.cutinActive && !this.gameOver && !this.countdownActive) this.spawnEnemy();
       },
+    });
+
+    // のこり時間・スコア（右上）とカウントダウン
+    this.createTimerUI();
+    this.cameras.main.fadeIn(250, 0, 0, 0);
+    this.startCountdown();
+  }
+
+  // 右上（テストボタンの下）に のこり時間 と SCORE を出す
+  createTimerUI() {
+    const font = { fontFamily: 'sans-serif', stroke: '#0b1030', strokeThickness: 4 };
+    this.timerText = this.add.text(788, 46, '', {
+      ...font, fontSize: '24px', fontStyle: 'bold', color: '#ffffff',
+    }).setOrigin(1, 0).setDepth(50);
+    this.totalScoreText = this.add.text(788, 78, '', {
+      ...font, fontSize: '20px', fontStyle: 'bold', color: '#ffe27a',
+    }).setOrigin(1, 0).setDepth(50);
+    this.updateTimerUI();
+  }
+
+  totalScore() {
+    return this.players.reduce((sum, p) => sum + p.score, 0) * SCORE_PER_ENEMY;
+  }
+
+  updateTimerUI() {
+    if (!this.timerText) return;
+    const sec = Math.max(0, this.timeLeft) / 1000;
+    this.timerText.setText(`のこり ${sec.toFixed(1)} 秒`);
+    this.timerText.setColor(sec <= 5 ? '#ff4466' : '#ffffff');
+    this.totalScoreText.setText(`SCORE ${this.totalScore()}`);
+  }
+
+  // 画面中央に 3 → 2 → 1 → START! を出してからゲーム開始
+  startCountdown() {
+    const { width, height } = this.scale;
+    const shade = this.add.rectangle(width / 2, height / 2, width, height, 0x000000, 0.35).setDepth(250);
+    const text = this.add.text(width / 2, height / 2, '', {
+      fontFamily: 'sans-serif', fontSize: '140px', fontStyle: 'bold', color: '#ffe27a',
+      stroke: '#ff77a8', strokeThickness: 12,
+    }).setOrigin(0.5).setDepth(251);
+    const show = (label, color) => {
+      text.setText(label).setColor(color).setScale(1.8).setAlpha(1);
+      this.tweens.add({ targets: text, scale: 1, duration: 350, ease: 'Back.Out' });
+      this.tweens.add({ targets: text, alpha: 0, duration: 250, delay: 700 });
+    };
+    ['3', '2', '1'].forEach((n, i) => this.time.delayedCall(i * 1000, () => show(n, '#ffe27a')));
+    this.time.delayedCall(3000, () => {
+      show('START!', '#7affb0');
+      this.countdownActive = false;
+      this.tweens.add({ targets: shade, alpha: 0, duration: 300, onComplete: () => shade.destroy() });
+      this.time.delayedCall(1000, () => text.destroy());
     });
   }
 
@@ -526,7 +583,7 @@ export class MainScene extends Phaser.Scene {
 
   // ビームを撃つ（持っているアイテム効果をすべて重ねて反映する）
   fireBeam(player) {
-    if (player.down || this.gameOver) return;
+    if (player.down || this.gameOver || this.countdownActive) return;
     const has = (t) => this.hasPower(player, t);
     const base = Math.atan2(player.aimDir.y, player.aimDir.x);
     // 撃つ向き：全方位 > （正面 + うしろ + よこ）。散弾はそれぞれを 3 方向に広げる
@@ -1431,7 +1488,7 @@ export class MainScene extends Phaser.Scene {
 
   // ゲージが満タンなら必殺技を発動（カットイン → 画面の敵を全部やっつける）
   trySpecial(player) {
-    if (!player || player.down || this.gameOver || this.cutinActive || player.special < SPECIAL_MAX) return;
+    if (!player || player.down || this.gameOver || this.countdownActive || this.cutinActive || player.special < SPECIAL_MAX) return;
     player.special = 0;
     this.updateSpecialUI();
     this.cutinActive = true;
@@ -1899,8 +1956,8 @@ export class MainScene extends Phaser.Scene {
     this.updateHpUI();
   }
 
-  // 全員の体力が 0 → ゲームオーバー（R キー / タップ / クリックでリトライ）
-  triggerGameOver() {
+  // 全員の体力が 0 → ゲームオーバー / 時間切れ → TIME UP（R キー / タップ / クリックでリトライ）
+  triggerGameOver(timeUp = false) {
     if (this.gameOver) return;
     this.gameOver = true;
     this.physics.pause();
@@ -1910,20 +1967,24 @@ export class MainScene extends Phaser.Scene {
     const { width, height } = this.scale;
     const font = { fontFamily: 'sans-serif', color: '#ffffff' };
     const shade = this.add.rectangle(width / 2, height / 2, width, height, 0x000000, 0.6).setDepth(300).setAlpha(0);
-    const title = this.add.text(width / 2, height / 2 - 60, 'GAME OVER', {
-      ...font, fontSize: '64px', fontStyle: 'bold', color: '#ff4466', stroke: '#ffffff', strokeThickness: 6,
+    const title = this.add.text(width / 2, height / 2 - 90, timeUp ? 'TIME UP!' : 'GAME OVER', {
+      ...font, fontSize: '64px', fontStyle: 'bold', color: timeUp ? '#7affb0' : '#ff4466', stroke: '#ffffff', strokeThickness: 6,
     }).setOrigin(0.5).setDepth(301).setScale(0.3);
+    this.updateTimerUI();
+    const scoreLine = this.add.text(width / 2, height / 2 - 20, `SCORE ${this.totalScore()}`, {
+      ...font, fontSize: '44px', fontStyle: 'bold', color: '#ffe27a', stroke: '#0b1030', strokeThickness: 6,
+    }).setOrigin(0.5).setDepth(301).setAlpha(0);
     const scores = this.players.map((p) => (this.players.length > 1 ? `${p.index + 1}P: ${p.score}` : `${p.score}`));
-    const result = this.add.text(width / 2, height / 2 + 15, `たおした敵　${scores.join('　')}`, {
+    const result = this.add.text(width / 2, height / 2 + 35, `たおした敵　${scores.join('　')}`, {
       ...font, fontSize: '22px', color: '#ffe27a',
     }).setOrigin(0.5).setDepth(301).setAlpha(0);
-    const retry = this.add.text(width / 2, height / 2 + 65,
+    const retry = this.add.text(width / 2, height / 2 + 80,
       this.isTouch ? 'タップでリトライ' : 'R キー / クリックでリトライ', {
         ...font, fontSize: '20px',
       }).setOrigin(0.5).setDepth(301).setAlpha(0);
     this.tweens.add({ targets: shade, alpha: 1, duration: 400 });
     this.tweens.add({ targets: title, scale: 1, duration: 500, ease: 'Back.Out' });
-    this.tweens.add({ targets: [result, retry], alpha: 1, duration: 400, delay: 400 });
+    this.tweens.add({ targets: [scoreLine, result, retry], alpha: 1, duration: 400, delay: 400 });
     this.tweens.add({ targets: retry, alpha: 0.35, duration: 600, delay: 900, yoyo: true, repeat: -1 });
     // すぐ押しっぱなしの操作でリトライしてしまわないよう、少し待ってから受け付ける
     this.time.delayedCall(800, () => {
@@ -1991,6 +2052,24 @@ export class MainScene extends Phaser.Scene {
     if (this.gameOver) {
       // ゲームオーバー中は背景だけ動かす
       this.updateBackground(delta);
+      return;
+    }
+    if (this.countdownActive) {
+      // カウントダウン中はその場で待つ（キャラのアニメと背景だけ動かす）
+      this.players.forEach((player) => {
+        player.rect.body.setVelocity(0, 0);
+        this.updateCuteCharacter(player, 0, 0, time);
+      });
+      this.updateBackground(delta);
+      this.updateSpecialUI(time);
+      return;
+    }
+    // のこり時間（必殺技の演出中は止める）。0 になったら TIME UP
+    if (!this.cutinActive) this.timeLeft -= delta;
+    this.updateTimerUI();
+    if (this.timeLeft <= 0) {
+      this.timeLeft = 0;
+      this.triggerGameOver(true);
       return;
     }
     this.players.forEach((player) => {

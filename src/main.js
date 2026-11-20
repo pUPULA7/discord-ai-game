@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import { TitleScene } from './scenes/TitleScene.js';
 import { MainScene } from './scenes/MainScene.js';
 
 const config = {
@@ -15,7 +16,7 @@ const config = {
     mode: Phaser.Scale.FIT,
     autoCenter: Phaser.Scale.CENTER_BOTH,
   },
-  scene: [MainScene],
+  scene: [TitleScene, MainScene], // 最初はタイトル画面
 };
 
 new Phaser.Game(config);
