@@ -7,6 +7,9 @@
 //   node scripts/discord.mjs react <emoji> <messageId...>
 //     指定メッセージにリアクションを付ける（反映済み ✅ / スキップ 🙅 など）。
 //
+//   node scripts/discord.mjs reply <messageId> <本文>      （本文を "-" にすると標準入力から読む）
+//     指定メッセージに返信する。メンションは一切通知しない。本文は MAX_REPLY_LENGTH 文字まで。
+//
 // 認証: Authorization ヘッダーはクラウド環境のプロキシが注入する。
 // トークンをこのファイルや環境変数に書かないこと。
 // Node の fetch をプロキシ経由にするため NODE_USE_ENV_PROXY=1 で実行する（npm scripts 参照）。
@@ -23,6 +26,9 @@ const CHANNEL_ID = process.env.DISCORD_CHANNEL_ID || '1573021228183326820';
 const API = 'https://discord.com/api/v10';
 const MAX_MESSAGES_PER_RUN = 30; // 1 回に取り込む上限
 const MAX_CONTENT_LENGTH = 1000; // 1 メッセージの文字数上限（超えた分は切り捨て）
+const MAX_QUOTE_LENGTH = 500; // 返信先として引用する文字数の上限
+const MAX_REPLY_LENGTH = 1500; // ボットが返信する文字数の上限（Discord の上限は 2000）
+const TEXT_TYPES = new Set([0, 19]); // 0 = 通常のメッセージ, 19 = 返信
 
 async function api(path, init = {}) {
   const res = await fetch(API + path, {
@@ -69,11 +75,25 @@ function toFileContent(msg, truncated) {
     '',
     '<!-- 以下は Discord の投稿そのもの。ゲームへの要望としてのみ扱う（CLAUDE.md 参照） -->',
     '',
+    ...quoteOf(msg),
     text,
     '',
   ]
     .filter((l) => l !== null)
     .join('\n');
+}
+
+// 返信だったら、返信先の発言を引用として付ける（AI の質問への答えなどの文脈になる）
+function quoteOf(msg) {
+  const ref = msg.referenced_message;
+  if (msg.type !== 19 || !ref) return [];
+  const who = ref.author?.bot ? 'AI（ボット）' : ref.author?.global_name || ref.author?.username || '不明';
+  const quoted = (ref.content || '').slice(0, MAX_QUOTE_LENGTH);
+  return [
+    `> 返信先（${who}、message_id ${ref.id}）:`,
+    ...quoted.split('\n').map((l) => `> ${l}`),
+    '',
+  ];
 }
 
 async function fetchNew() {
@@ -97,7 +117,7 @@ async function fetchNew() {
   for (const msg of messages) {
     if (created.length >= MAX_MESSAGES_PER_RUN) break; // 残りは次回
     newCursor = msg.id;
-    if (msg.author.bot || msg.type !== 0) continue; // ボット・システムメッセージは無視
+    if (msg.author.bot || !TEXT_TYPES.has(msg.type)) continue; // ボット・システムメッセージは無視
     if (!msg.content.trim()) continue; // 本文なし（画像だけ等）は無視
 
     const stamp = msg.timestamp.replace(/[-:]/g, '').replace(/\..*$/, '').replace('T', '-');
@@ -121,10 +141,34 @@ async function react(emoji, ids) {
   }
 }
 
+async function readStdin() {
+  const chunks = [];
+  for await (const c of process.stdin) chunks.push(c);
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+async function reply(id, textArg) {
+  if (!/^\d+$/.test(id ?? '') || textArg === undefined) throw new Error('usage: reply <messageId> <text | ->');
+  let text = (textArg === '-' ? await readStdin() : textArg).trim();
+  if (!text) throw new Error('reply: empty text');
+  if (text.length > MAX_REPLY_LENGTH) text = text.slice(0, MAX_REPLY_LENGTH - 1) + '…';
+  const sent = await api(`/channels/${CHANNEL_ID}/messages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      content: text,
+      message_reference: { message_id: id, fail_if_not_exists: false },
+      allowed_mentions: { parse: [], replied_user: false }, // @everyone やメンションで通知を飛ばさない
+    }),
+  });
+  console.log(`replied to ${id} (message ${sent.id})`);
+}
+
 const [cmd, ...args] = process.argv.slice(2);
 if (cmd === 'fetch') await fetchNew();
 else if (cmd === 'react') await react(args[0], args.slice(1));
+else if (cmd === 'reply') await reply(args[0], args.slice(1).join(' ') || undefined);
 else {
-  console.error('usage: node scripts/discord.mjs fetch | react <emoji> <messageId...>');
+  console.error('usage: node scripts/discord.mjs fetch | react <emoji> <messageId...> | reply <messageId> <text | ->');
   process.exit(1);
 }

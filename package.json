@@ -8,7 +8,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "discord:fetch": "NODE_USE_ENV_PROXY=1 node scripts/discord.mjs fetch",
-    "discord:react": "NODE_USE_ENV_PROXY=1 node scripts/discord.mjs react"
+    "discord:react": "NODE_USE_ENV_PROXY=1 node scripts/discord.mjs react",
+    "discord:reply": "NODE_USE_ENV_PROXY=1 node scripts/discord.mjs reply"
   },
   "dependencies": {
     "phaser": "^3.90.0"
