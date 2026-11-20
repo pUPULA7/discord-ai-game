@@ -2,6 +2,11 @@
 
 指示の反映内容、矛盾時の判断理由、スキップした指示をここに記録します（新しいものが上）。
 
+## 2026-11-20 — 指示の読み取り先をフォーラムのスレッドに変更
+
+- Discord の指示を読む場所を、テキストチャンネルからフォーラム内のスレッド「ai指示文」（ID 1573021228183326820）に変更（`scripts/discord.mjs`）
+- 取得位置（`.discord-cursor`）はそのまま。Discord の ID は時刻順なので、変更以降の新しい投稿だけが取り込まれる
+
 ## 2026-11-20 — pixelfx（ドット絵エフェクト集）を導入
 
 - [patch-gg/pixelfx](https://github.com/patch-gg/pixelfx)（MIT、v0.3.1）を `vendor/pixelfx/` に同梱（エフェクト 244 種類とツール。詳細は `VENDORED.md`）

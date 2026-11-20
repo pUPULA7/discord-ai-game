@@ -1,4 +1,4 @@
-// Discord の指示チャンネルと instructions/ をつなぐスクリプト
+// Discord の指示スレッド（フォーラム内の「ai指示文」）と instructions/ をつなぐスクリプト
 //
 //   node scripts/discord.mjs fetch
 //     前回以降の新しいメッセージを取得し、instructions/pending/ に 1 メッセージ 1 ファイルで保存する。
@@ -19,7 +19,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PENDING_DIR = join(ROOT, 'instructions', 'pending');
 const CURSOR_FILE = join(ROOT, 'instructions', '.discord-cursor');
 
-const CHANNEL_ID = process.env.DISCORD_CHANNEL_ID || '1572372594684985485';
+const CHANNEL_ID = process.env.DISCORD_CHANNEL_ID || '1573021228183326820';
 const API = 'https://discord.com/api/v10';
 const MAX_MESSAGES_PER_RUN = 30; // 1 回に取り込む上限
 const MAX_CONTENT_LENGTH = 1000; // 1 メッセージの文字数上限（超えた分は切り捨て）
