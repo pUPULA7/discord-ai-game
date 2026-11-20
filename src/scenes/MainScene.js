@@ -92,7 +92,7 @@ const TEST_ENEMY_MAX = 30; // テストパネルの「敵+5」で出せる上限
 // 必殺技
 const SPECIAL_MAX = 10; // 敵をこの数たおすとゲージが満タンになり、必殺技が使える
 const SPECIAL_CUTIN_TIME = 1300; // カットイン演出の長さ（ミリ秒）。この間は敵が止まる
-const SPECIAL_NAME = 'ねこみみ スターバースト！！';
+const SPECIAL_NAME = 'ねこみみ 乱れ斬り！！';
 const SPECIAL_BUTTON = { x: 590, y: 400 };
 const GAUGE_X = 310; // 画面下中央の必殺ゲージの位置（1P が下、2P がその上）
 const GAUGE_Y = 578;
@@ -1269,8 +1269,9 @@ export class MainScene extends Phaser.Scene {
     bandEdge.lineBetween(0, 190, width, 130);
     bandEdge.lineBetween(0, 470, width, 410);
     const lines = this.add.graphics(); // 集中線っぽいスピード線
-    const portrait = this.createCuteCharacter(0, 0, 0xffcc00);
-    portrait.container.setDepth(0).setScale(5);
+    // カットインに出てくる水着の女の子（コードで描画。水着の色はプレイヤーの色）
+    const girl = this.add.graphics();
+    const portrait = { container: this.add.container(0, 0, [girl]), girl };
     const title = this.add.text(width - 40, 250, '必殺！', {
       fontFamily: 'sans-serif', fontSize: '56px', fontStyle: 'bold', color: '#ffffff',
       stroke: '#1d1d33', strokeThickness: 8,
@@ -1343,8 +1344,7 @@ export class MainScene extends Phaser.Scene {
     const c = this.cutin;
     const color = PLAYER_COLORS[player.colorIndex];
     c.band.setFillStyle(color);
-    c.portrait.body.setFillStyle(color);
-    c.portrait.ears.forEach((e) => e.setFillStyle(color));
+    this.drawSwimsuitGirl(c.portrait.girl, color);
     c.who.setText(this.players.length > 1 ? `${player.index + 1}P の必殺技` : '');
     // スピード線
     c.lines.clear();
@@ -1357,7 +1357,7 @@ export class MainScene extends Phaser.Scene {
     c.container.setVisible(true);
     c.dim.setAlpha(0);
     c.band.x = width; c.lines.x = width;
-    c.portrait.container.setPosition(-200, 310).setAngle(-8);
+    c.portrait.container.setPosition(-200, 300).setAngle(-6);
     [c.title, c.name, c.who].forEach((t) => { t.setAlpha(0); t.x = width + 200; });
     this.tweens.add({ targets: c.dim, alpha: 1, duration: 150 });
     this.tweens.add({ targets: [c.band, c.lines], x: 0, duration: 220, ease: 'Cubic.Out' });
@@ -1379,24 +1379,194 @@ export class MainScene extends Phaser.Scene {
     });
   }
 
-  // 必殺技の本体：まぶしい光 + 衝撃波で、画面上の敵を全部やっつける
-  specialBlast(player) {
-    const { x, y } = player.rect;
-    const color = PLAYER_COLORS[player.colorIndex];
-    this.cameras.main.flash(250, 255, 255, 255);
-    this.cameras.main.shake(300, 0.012);
-    for (let k = 0; k < 3; k += 1) {
-      const ring = this.add.circle(x, y, 20, color, 0).setStrokeStyle(10 - k * 3, k === 1 ? 0xffffff : color).setDepth(20);
-      this.tweens.add({ targets: ring, scale: 50, alpha: 0, duration: 700, delay: k * 110, ease: 'Cubic.Out', onComplete: () => ring.destroy() });
+  // カットイン用：可愛い水着の女の子（ねこみみカチューシャ・フリルのワンピース水着・浮き輪・ピース）
+  drawSwimsuitGirl(g, suitColor) {
+    const line = 0x1d1d33;
+    const skin = 0xffe2cc;
+    const hair = 0x8a5a3c;
+    const hairDark = 0x6a4128;
+    g.clear();
+    // うしろ髪とツインテール
+    g.fillStyle(hair, 1);
+    g.lineStyle(4, line, 1);
+    g.fillEllipse(-92, 10, 56, 170); g.strokeEllipse(-92, 10, 56, 170);
+    g.fillEllipse(92, 10, 56, 170); g.strokeEllipse(92, 10, 56, 170);
+    g.fillCircle(0, -60, 84); g.strokeCircle(0, -60, 84);
+    g.fillStyle(0xff77a8, 1); // 髪ゴム
+    g.fillCircle(-80, -70, 11); g.fillCircle(80, -70, 11);
+    // ねこみみカチューシャ
+    g.fillStyle(suitColor, 1);
+    g.fillTriangle(-70, -110, -30, -140, -78, -175); g.strokeTriangle(-70, -110, -30, -140, -78, -175);
+    g.fillTriangle(70, -110, 30, -140, 78, -175); g.strokeTriangle(70, -110, 30, -140, 78, -175);
+    g.fillStyle(0xff9ebb, 1);
+    g.fillTriangle(-64, -122, -42, -138, -70, -160);
+    g.fillTriangle(64, -122, 42, -138, 70, -160);
+    // 首・肩・腕
+    g.fillStyle(skin, 1);
+    g.fillRect(-16, 0, 32, 34);
+    g.fillEllipse(0, 70, 150, 80); g.strokeEllipse(0, 70, 150, 80);
+    g.fillEllipse(-74, 100, 34, 90); g.strokeEllipse(-74, 100, 34, 90);
+    // ワンピース水着（肩ひも + フリル）
+    g.fillStyle(suitColor, 1);
+    g.fillRect(-46, 40, 14, 30); g.fillRect(32, 40, 14, 30);
+    g.fillRoundedRect(-60, 62, 120, 100, 26); g.strokeRoundedRect(-60, 62, 120, 100, 26);
+    g.fillStyle(0xffffff, 1);
+    for (let k = 0; k < 7; k += 1) g.fillCircle(-54 + k * 18, 64, 10);
+    g.fillStyle(suitColor, 1);
+    g.fillCircle(0, 86, 9); // 胸元のリボン
+    g.fillTriangle(0, 86, -18, 76, -18, 96); g.fillTriangle(0, 86, 18, 76, 18, 96);
+    g.fillStyle(0xffffff, 0.9); g.fillCircle(0, 86, 4);
+    // 浮き輪（赤白しま）
+    g.lineStyle(26, 0xffffff, 1);
+    g.strokeEllipse(0, 150, 190, 60);
+    g.lineStyle(26, 0xff004d, 1);
+    for (let k = 0; k < 4; k += 1) {
+      const a0 = (Math.PI / 2) * k;
+      g.beginPath();
+      for (let t = 0; t <= 8; t += 1) {
+        const a = a0 + (t / 8) * (Math.PI / 4);
+        const px = Math.cos(a) * 95;
+        const py = 150 + Math.sin(a) * 30;
+        if (t === 0) g.moveTo(px, py); else g.lineTo(px, py);
+      }
+      g.strokePath();
     }
-    const targets = this.enemies.slice();
-    targets.forEach((e) => {
-      e.bySpecial = true;
-      const d = Phaser.Math.Distance.Between(x, y, e.x, e.y);
-      // 衝撃波が届いた順にはじける
-      this.time.delayedCall(Math.min(500, d * 0.6), () => this.defeatEnemy(e, player));
+    // 顔
+    g.lineStyle(4, line, 1);
+    g.fillStyle(skin, 1);
+    g.fillCircle(0, -40, 64); g.strokeCircle(0, -40, 64);
+    // 前髪
+    g.fillStyle(hair, 1);
+    g.fillEllipse(0, -92, 140, 52);
+    g.fillTriangle(-62, -90, -30, -86, -56, -40);
+    g.fillTriangle(-34, -92, 2, -88, -16, -54);
+    g.fillTriangle(-4, -92, 34, -90, 14, -56);
+    g.fillTriangle(26, -90, 64, -88, 56, -42);
+    g.fillStyle(hairDark, 1);
+    g.fillEllipse(-20, -106, 40, 10);
+    // ひまわりの髪かざり
+    g.fillStyle(0xffcc00, 1);
+    for (let k = 0; k < 8; k += 1) {
+      const a = (Math.PI * 2 * k) / 8;
+      g.fillCircle(50 + Math.cos(a) * 11, -96 + Math.sin(a) * 11, 7);
+    }
+    g.fillStyle(0xab5236, 1); g.fillCircle(50, -96, 8);
+    // 目（左はキラキラ、右はウインク）
+    g.fillStyle(line, 1);
+    g.fillEllipse(-24, -30, 26, 34);
+    g.fillStyle(0x7e2553, 1); g.fillEllipse(-24, -24, 18, 20);
+    g.fillStyle(0xffffff, 1);
+    g.fillCircle(-29, -38, 6); g.fillCircle(-19, -21, 3);
+    g.lineStyle(5, line, 1);
+    g.beginPath(); g.moveTo(14, -30); g.lineTo(26, -36); g.lineTo(38, -30); g.strokePath();
+    g.lineStyle(3, line, 1);
+    g.lineBetween(-38, -46, -42, -52); g.lineBetween(-30, -50, -32, -56); // まつげ
+    // ほっぺ
+    g.fillStyle(0xff77a8, 0.55);
+    g.fillEllipse(-38, -8, 22, 12); g.fillEllipse(38, -8, 22, 12);
+    // にっこり口
+    g.fillStyle(0xd94a6a, 1);
+    g.beginPath(); g.moveTo(-10, 0); g.lineTo(10, 0); g.lineTo(0, 12); g.closePath(); g.fillPath();
+    g.lineStyle(3, line, 1);
+    g.beginPath(); g.moveTo(-10, 0); g.lineTo(10, 0); g.lineTo(0, 12); g.closePath(); g.strokePath();
+    // ピースサイン
+    g.fillStyle(skin, 1);
+    g.lineStyle(3, line, 1);
+    g.fillRoundedRect(72, -64, 13, 40, 6); g.strokeRoundedRect(72, -64, 13, 40, 6);
+    g.fillRoundedRect(88, -60, 13, 38, 6); g.strokeRoundedRect(88, -60, 13, 38, 6);
+    g.fillCircle(84, -18, 18); g.strokeCircle(84, -18, 18);
+    g.fillEllipse(96, 14, 30, 52); g.strokeEllipse(96, 14, 30, 52);
+    // キラキラ
+    g.fillStyle(0xffffff, 1);
+    [[-118, -140, 10], [120, -120, 8], [-110, 70, 7]].forEach(([sx, sy, r]) => {
+      g.fillTriangle(sx - r, sy, sx + r, sy, sx, sy - r * 2.2);
+      g.fillTriangle(sx - r, sy, sx + r, sy, sx, sy + r * 2.2);
+      g.fillTriangle(sx, sy - r, sx, sy + r, sx - r * 2.2, sy);
+      g.fillTriangle(sx, sy - r, sx, sy + r, sx + r * 2.2, sy);
     });
-    this.time.delayedCall(520, () => { this.cutinActive = false; });
+  }
+
+  // 斬撃 1 本（細長い三日月形の光が一瞬で走り、すっと消える）
+  slashLine(x, y, angle, length, thick, color, delay = 0) {
+    const c = this.add.container(x, y).setDepth(25).setRotation(angle).setVisible(false);
+    const g = this.add.graphics();
+    const half = length / 2;
+    const lens = (w, col, alpha) => {
+      g.fillStyle(col, alpha);
+      g.beginPath();
+      g.moveTo(-half, 0);
+      for (let t = 0; t <= 12; t += 1) {
+        const px = -half + (length * t) / 12;
+        g.lineTo(px, -Math.sin((Math.PI * t) / 12) * w);
+      }
+      for (let t = 12; t >= 0; t -= 1) {
+        const px = -half + (length * t) / 12;
+        g.lineTo(px, Math.sin((Math.PI * t) / 12) * w * 0.35);
+      }
+      g.closePath();
+      g.fillPath();
+    };
+    lens(thick * 1.8, color, 0.55);
+    lens(thick, 0xffffff, 1);
+    c.add(g);
+    c.scaleX = 0;
+    this.time.delayedCall(delay, () => {
+      c.setVisible(true);
+      this.tweens.add({ targets: c, scaleX: 1, duration: 90, ease: 'Cubic.Out' });
+      this.tweens.add({
+        targets: c, scaleY: 0, alpha: 0, duration: 260, delay: 110, ease: 'Cubic.In',
+        onComplete: () => c.destroy(),
+      });
+    });
+  }
+
+  // 必殺技の本体：画面を何度も斬り裂く斬撃で、画面上の敵を全部やっつける
+  specialBlast(player) {
+    const { width, height } = this.scale;
+    const color = PLAYER_COLORS[player.colorIndex];
+    this.cameras.main.flash(200, 255, 255, 255);
+    this.cameras.main.shake(450, 0.01);
+    const diag = Math.hypot(width, height);
+    // 画面を横切る大きな斬撃（乱れ斬り → 最後に X 字）
+    for (let k = 0; k < 6; k += 1) {
+      const angle = Phaser.Math.FloatBetween(-0.9, 0.9) + (k % 2 ? Math.PI / 2 : 0);
+      this.slashLine(
+        width / 2 + Phaser.Math.Between(-160, 160), height / 2 + Phaser.Math.Between(-120, 120),
+        angle, diag * 1.1, 16, color, k * 55,
+      );
+    }
+    [0.6, -0.6].forEach((a, k) => this.slashLine(width / 2, height / 2, a, diag * 1.2, 18, color, 380 + k * 70));
+    this.time.delayedCall(380, () => this.cameras.main.flash(120, 255, 255, 255));
+    // 敵は 1 体ずつ斬られて、まっぷたつになってはじける
+    const targets = this.enemies.slice();
+    targets.forEach((e, i) => {
+      e.bySpecial = true;
+      const delay = Math.min(480, 60 + i * 35);
+      this.time.delayedCall(delay, () => {
+        if (e.dead) return;
+        const angle = Phaser.Math.FloatBetween(0, Math.PI);
+        this.slashLine(e.x, e.y, angle, 90, 7, color);
+        this.splitEnemy(e, angle);
+        this.defeatEnemy(e, player);
+      });
+    });
+    this.time.delayedCall(560, () => { this.cutinActive = false; });
+  }
+
+  // 斬られた敵の半分ずつが左右に飛んでいく演出
+  splitEnemy(e, angle) {
+    const deg = Phaser.Math.RadToDeg(angle);
+    [-1, 1].forEach((side) => {
+      const start = side < 0 ? deg + 180 : deg;
+      const halfArc = this.add.arc(e.x, e.y, ENEMY_RADIUS, start, start + 180, false, ENEMY_COLOR)
+        .setStrokeStyle(2, 0x1d1d33).setDepth(9);
+      const nx = Math.cos(angle + (Math.PI / 2) * side);
+      const ny = Math.sin(angle + (Math.PI / 2) * side);
+      this.tweens.add({
+        targets: halfArc, x: e.x + nx * 26, y: e.y + ny * 26, angle: side * 25, alpha: 0,
+        duration: 420, ease: 'Cubic.Out', onComplete: () => halfArc.destroy(),
+      });
+    });
   }
 
   updateScoreText() {
