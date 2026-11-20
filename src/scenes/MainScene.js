@@ -1,6 +1,11 @@
 import Phaser from 'phaser';
 import { PixelFxLayer, PIXEL_SCALE, rampFrom } from '../fx/PixelFxLayer.js';
 import * as collectBurst from 'pixelfx/fx/pickups/collect-burst';
+import * as manaBurst from 'pixelfx/fx/arcane/mana-burst';
+import * as starFall from 'pixelfx/fx/arcane/star-fall';
+import {
+  START_AREA, WORLD_COLS, WORLD_ROWS, areaAt, ensureAreaTexture,
+} from './world.js';
 
 const PLAYER_SIZE = 32;
 const PLAYER_SPEED = 200; // px/秒
@@ -115,6 +120,20 @@ const GAUGE_Y = 578;
 const GAUGE_W = 150;
 const GAUGE_H = 12;
 
+// オリジナルスキル「にゃんこ流星群」（C キー / 2P は H キー / スマホは「スキル」ボタン。クールタイムあり）
+const SKILL_NAME = 'にゃんこ流星群';
+const SKILL_COOLDOWN = 6000; // 使ってから次に使えるまで（ミリ秒）
+const SKILL_RANGE = 340; // 流れ星で狙う敵の範囲（プレイヤーからの距離 px）
+const SKILL_TARGETS = 5; // 狙う敵の最大数
+const SKILL_MIN_STRIKES = 3; // 敵が少なくても最低この数の流れ星を落とす
+const SKILL_RADIUS = 80; // 流れ星 1 つが敵をたおす範囲（半径 px）
+const SKILL_STRIKE_GAP = 170; // 流れ星どうしの間隔（ミリ秒）
+const SKILL_LAND_DELAY = 480; // 流れ星のエフェクト開始から着弾まで（ミリ秒）
+const SKILL_BUTTON = { x: 710, y: 320 };
+
+// マップ移動（画面の端から出るととなりのエリアへ）
+const AREA_FADE_TIME = 160; // 暗転の時間（ミリ秒）
+
 // 点 (px, py) と線分 (ax, ay)-(bx, by) の距離
 function distToSegment(px, py, ax, ay, bx, by) {
   const dx = bx - ax;
@@ -136,10 +155,20 @@ export class MainScene extends Phaser.Scene {
     super('MainScene');
   }
 
+  // TitleScene から { endless: true } が来たら「時間無制限モード」
+  init(data) {
+    this.endless = !!(data && data.endless);
+  }
+
   create() {
     const { width, height } = this.scale;
 
-    // 背景（星空・星雲・惑星・流れ星）
+    // 今いるエリア（地上マップ 3 × 3。最初は真ん中の「はじまりの草原」）
+    this.area = { ...START_AREA };
+    this.areaSerial = 0; // エリアを移動するたびに +1（移動前の演出の続きを止める用）
+    this.areaChanging = false;
+
+    // 背景（地上のマップ）
     this.createBackground();
 
     // pixelfx のドット絵エフェクトを重ねるレイヤー（キャラより手前・UI より奥）
@@ -162,6 +191,7 @@ export class MainScene extends Phaser.Scene {
     this.gameOver = false;
     this.countdownActive = true; // 3, 2, 1 のカウントダウン中は動けない・敵も出ない
     this.timeLeft = GAME_TIME;
+    this.elapsed = 0; // 時間無制限モードで遊んだ時間（ミリ秒）
     this.physics.resume(); // リトライ直後（ゲームオーバーで止めた物理を戻す）
     this.input.keyboard.on('keydown-X', (event) => {
       if (!event.repeat) this.trySpecial(this.players[0]);
@@ -170,6 +200,16 @@ export class MainScene extends Phaser.Scene {
       if (event.repeat) return;
       if (!this.players[1]) { this.joinP2(); return; } // 最初の 1 回は参加だけ
       this.trySpecial(this.players[1]);
+    });
+
+    // オリジナルスキル：C キー = 1P / H キー = 2P（クールタイムが終わっていれば何度でも）
+    this.input.keyboard.on('keydown-C', (event) => {
+      if (!event.repeat) this.trySkill(this.players[0]);
+    });
+    this.input.keyboard.on('keydown-H', (event) => {
+      if (event.repeat) return;
+      if (!this.players[1]) { this.joinP2(); return; } // 最初の 1 回は参加だけ
+      this.trySkill(this.players[1]);
     });
 
     // スペースキー：1P の色を切り替える / O キー：2P の色を切り替える
@@ -206,9 +246,9 @@ export class MainScene extends Phaser.Scene {
 
     this.isTouch = isTouchDevice(this.game);
     const helpText = this.isTouch
-      ? '左下のスティックで移動　「加速」を押している間は加速　「色」で色チェンジ　「ビーム」で発射　「必殺」で必殺技'
-      : '1P: 矢印キー / WASD で移動　左シフトで加速　スペースで色チェンジ　Z でビーム　X で必殺技\n'
-        + '2P: IJKL で移動　右シフトで加速　O で色チェンジ　U でビーム　P で必殺技（押すと参加）';
+      ? 'スティックで移動（画面の端からとなりのエリアへ）　「加速」で加速　「色」で色チェンジ　「ビーム」で発射　「スキル」でにゃんこ流星群　「必殺」で必殺技'
+      : '1P: 矢印/WASD 移動　左シフト 加速　スペース 色　Z ビーム　C スキル　X 必殺\n'
+        + '2P(押すと参加): IJKL 移動 右シフト 加速 O 色 U ビーム H スキル P 必殺';
 
     // スマホのときだけタッチ操作 UI を出す（1P を操作）
     this.stickVector = new Phaser.Math.Vector2(0, 0);
@@ -220,12 +260,16 @@ export class MainScene extends Phaser.Scene {
       fontSize: '16px',
       color: '#ffffff',
       lineSpacing: 4,
+      stroke: '#1d2b10',
+      strokeThickness: 3,
       wordWrap: { width: 600, useAdvancedWrap: true }, // 右上の のこり時間 と重ならない幅
     }).setDepth(50);
     this.scoreText = this.add.text(12, help.y + help.height + 6, '', {
       fontFamily: 'sans-serif',
       fontSize: '16px',
       color: '#ffe27a',
+      stroke: '#1d2b10',
+      strokeThickness: 3,
     }).setDepth(50);
     this.updateScoreText();
     this.powerText = this.add.text(12, this.scoreText.y + 22, '', {
@@ -234,7 +278,7 @@ export class MainScene extends Phaser.Scene {
       color: '#ffffff',
       stroke: '#0b1030',
       strokeThickness: 3,
-      wordWrap: { width: 776, useAdvancedWrap: true },
+      wordWrap: { width: 700, useAdvancedWrap: true }, // 右上のミニマップと重ならない幅
     }).setDepth(50);
 
     // 必殺ゲージ（画面下）とカットイン演出の準備
@@ -251,12 +295,14 @@ export class MainScene extends Phaser.Scene {
       delay: ENEMY_SPAWN_INTERVAL,
       loop: true,
       callback: () => {
-        if (this.enemies.length < ENEMY_MAX && !this.cutinActive && !this.gameOver && !this.countdownActive) this.spawnEnemy();
+        if (this.enemies.length < ENEMY_MAX && !this.cutinActive && !this.gameOver && !this.countdownActive
+          && !this.areaChanging) this.spawnEnemy();
       },
     });
 
     // のこり時間・スコア（右上）とカウントダウン
     this.createTimerUI();
+    this.createMinimap();
     this.cameras.main.fadeIn(250, 0, 0, 0);
     this.startCountdown();
   }
@@ -273,15 +319,29 @@ export class MainScene extends Phaser.Scene {
     this.updateTimerUI();
   }
 
+  // 1:23.4 のような表示
+  formatTime(ms) {
+    const total = Math.max(0, ms) / 1000;
+    const m = Math.floor(total / 60);
+    const sec = total - m * 60;
+    return m > 0 ? `${m}:${sec.toFixed(1).padStart(4, '0')}` : `${sec.toFixed(1)} 秒`;
+  }
+
   totalScore() {
     return this.players.reduce((sum, p) => sum + p.score, 0) * SCORE_PER_ENEMY;
   }
 
   updateTimerUI() {
     if (!this.timerText) return;
-    const sec = Math.max(0, this.timeLeft) / 1000;
-    this.timerText.setText(`のこり ${sec.toFixed(1)} 秒`);
-    this.timerText.setColor(sec <= 5 ? '#ff4466' : '#ffffff');
+    if (this.endless) {
+      // 時間無制限モード：あそんだ時間を表示（時間切れなし）
+      this.timerText.setText(`∞ むせいげん  ${this.formatTime(this.elapsed)}`);
+      this.timerText.setColor('#ffffff');
+    } else {
+      const sec = Math.max(0, this.timeLeft) / 1000;
+      this.timerText.setText(`のこり ${sec.toFixed(1)} 秒`);
+      this.timerText.setColor(sec <= 5 ? '#ff4466' : '#ffffff');
+    }
     this.totalScoreText.setText(`SCORE ${this.totalScore()}`);
   }
 
@@ -326,6 +386,9 @@ export class MainScene extends Phaser.Scene {
       dash: false,
       score: 0,
       special: 0, // 必殺ゲージ（0〜SPECIAL_MAX）
+      skillReadyAt: 0, // この時刻からスキルが使える（クールタイム）
+      moveX: 0, // 今押している移動の向き（エリア移動の判定用）
+      moveY: 0,
       hp: PLAYER_MAX_HP, // 体力（0 でダウン）
       invincibleUntil: 0, // この時刻までは無敵（ダメージ直後）
       down: false, // 体力 0 でダウン中
@@ -547,6 +610,10 @@ export class MainScene extends Phaser.Scene {
       beamBtn.setFillStyle(0xffffff, 0.45);
     });
     this.beamBtn = beamBtn;
+
+    const skillBtn = makeButton(SKILL_BUTTON, 'スキル');
+    skillBtn.on('pointerdown', () => this.trySkill(this.players[0]));
+    this.skillBtn = skillBtn;
 
     const specialBtn = makeButton(SPECIAL_BUTTON, '必殺');
     specialBtn.on('pointerdown', () => this.trySpecial(this.players[0]));
@@ -1221,145 +1288,151 @@ export class MainScene extends Phaser.Scene {
   }
 
 
-  // 背景：夜空のグラデーション + 星雲 + 遠くの惑星 + またたく星（3 層でゆっくり流れる）+ ときどき流れ星
+  // 背景：地上のマップ（3 × 3 のエリア。今いるエリアの背景を表示）+ ひらひら飛ぶちょうちょ
   createBackground() {
-    const { width, height } = this.scale;
-    if (!this.textures.exists('bg-sky')) {
-      const tex = this.textures.createCanvas('bg-sky', width, height);
-      const ctx = tex.getContext();
-      // 夜空のグラデーション（上は深い紺、下はむらさき寄り）
-      const sky = ctx.createLinearGradient(0, 0, 0, height);
-      sky.addColorStop(0, '#0b1030');
-      sky.addColorStop(0.55, '#1d2b53');
-      sky.addColorStop(1, '#3a1f5d');
-      ctx.fillStyle = sky;
-      ctx.fillRect(0, 0, width, height);
-      // 星雲（ぼんやりした色の雲）
-      const nebula = (x, y, r, color) => {
-        const g = ctx.createRadialGradient(x, y, 0, x, y, r);
-        g.addColorStop(0, color);
-        g.addColorStop(1, 'rgba(0,0,0,0)');
-        ctx.fillStyle = g;
-        ctx.fillRect(x - r, y - r, r * 2, r * 2);
-      };
-      nebula(180, 160, 260, 'rgba(255, 119, 168, 0.22)');
-      nebula(620, 420, 300, 'rgba(41, 173, 255, 0.2)');
-      nebula(420, 260, 200, 'rgba(131, 118, 156, 0.18)');
-      nebula(720, 90, 160, 'rgba(0, 228, 54, 0.08)');
-      // 遠くの惑星（輪っか付き）
-      const px = 655;
-      const py = 150;
-      const pr = 46;
-      const planet = ctx.createRadialGradient(px - 16, py - 16, 6, px, py, pr);
-      planet.addColorStop(0, '#ffd59e');
-      planet.addColorStop(0.6, '#e07a5f');
-      planet.addColorStop(1, '#7a2e4a');
-      ctx.save();
-      ctx.globalAlpha = 0.85;
-      ctx.strokeStyle = 'rgba(255, 226, 180, 0.5)';
-      ctx.lineWidth = 5;
-      ctx.beginPath(); // 輪っか（奥側）
-      ctx.ellipse(px, py, pr * 1.9, pr * 0.45, -0.35, Math.PI, Math.PI * 2);
-      ctx.stroke();
-      ctx.fillStyle = planet;
-      ctx.beginPath();
-      ctx.arc(px, py, pr, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.beginPath(); // 輪っか（手前側）
-      ctx.ellipse(px, py, pr * 1.9, pr * 0.45, -0.35, 0, Math.PI);
-      ctx.stroke();
-      ctx.restore();
-      // 小さな月
-      ctx.fillStyle = 'rgba(220, 230, 255, 0.55)';
-      ctx.beginPath();
-      ctx.arc(110, 470, 14, 0, Math.PI * 2);
-      ctx.fill();
-      tex.refresh();
+    const key = ensureAreaTexture(this, this.area.x, this.area.y);
+    this.bgImage = this.add.image(0, 0, key).setOrigin(0).setDepth(-20);
+    this.butterflies = [];
+    const colors = [0xffffff, 0xffe14d, 0xff9ebb, 0x9fd8ff];
+    for (let i = 0; i < 5; i += 1) {
+      const color = colors[i % colors.length];
+      const wingL = this.add.ellipse(-3, 0, 6, 8, color).setStrokeStyle(1, 0x1d1d33, 0.6);
+      const wingR = this.add.ellipse(3, 0, 6, 8, color).setStrokeStyle(1, 0x1d1d33, 0.6);
+      const b = this.add.container(Phaser.Math.Between(40, 760), Phaser.Math.Between(40, 560), [wingL, wingR]).setDepth(-5);
+      b.wings = [wingL, wingR];
+      b.vx = Phaser.Math.FloatBetween(-30, 30);
+      b.vy = Phaser.Math.FloatBetween(-20, 20);
+      b.phase = Math.random() * 10;
+      this.butterflies.push(b);
     }
-    this.add.image(0, 0, 'bg-sky').setOrigin(0).setDepth(-20);
-
-    // またたく星（奥ほど小さく遅い）
-    const layers = [
-      { count: 70, size: [0.6, 1.2], speed: 4, alpha: 0.5 },
-      { count: 40, size: [1, 1.8], speed: 9, alpha: 0.75 },
-      { count: 18, size: [1.6, 2.4], speed: 16, alpha: 1 },
-    ];
-    const starColors = [0xffffff, 0xfff1c1, 0xc2e5ff, 0xffd6e8];
-    this.bgStars = [];
-    layers.forEach((layer, li) => {
-      for (let i = 0; i < layer.count; i += 1) {
-        const star = this.add.circle(
-          Math.random() * width,
-          Math.random() * height,
-          Phaser.Math.FloatBetween(layer.size[0], layer.size[1]),
-          Phaser.Utils.Array.GetRandom(starColors),
-          layer.alpha,
-        ).setDepth(-19 + li);
-        star.speed = layer.speed;
-        this.tweens.add({
-          targets: star,
-          alpha: layer.alpha * 0.25,
-          duration: Phaser.Math.Between(700, 2200),
-          yoyo: true,
-          repeat: -1,
-          delay: Phaser.Math.Between(0, 2000),
-          ease: 'Sine.InOut',
-        });
-        this.bgStars.push(star);
-      }
-    });
-    // 大きめのキラキラ星（十字の光）
-    for (let i = 0; i < 6; i += 1) {
-      const sparkle = this.add.star(
-        Phaser.Math.Between(30, width - 30),
-        Phaser.Math.Between(30, height - 30),
-        4, 1.2, 7, 0xffffff, 0.9,
-      ).setDepth(-16);
-      this.tweens.add({
-        targets: sparkle,
-        scale: { from: 0.4, to: 1.1 },
-        alpha: { from: 0.3, to: 1 },
-        angle: 45,
-        duration: Phaser.Math.Between(900, 1600),
-        yoyo: true,
-        repeat: -1,
-        delay: Phaser.Math.Between(0, 1500),
-      });
-    }
-
-    // ときどき流れ星
-    this.time.addEvent({
-      delay: 3500,
-      loop: true,
-      callback: () => { if (Math.random() < 0.7) this.shootingStar(); },
-    });
-  }
-
-  shootingStar() {
-    const { width, height } = this.scale;
-    const x = Phaser.Math.Between(width * 0.2, width);
-    const y = Phaser.Math.Between(0, height * 0.4);
-    const tail = this.add.rectangle(0, 0, 70, 2, 0xffffff, 0.8).setOrigin(0, 0.5);
-    const head = this.add.circle(0, 0, 2.5, 0xffffff);
-    const s = this.add.container(x, y, [tail, head]).setAngle(150).setDepth(-15).setAlpha(0);
-    const dist = Phaser.Math.Between(220, 360);
-    this.tweens.add({
-      targets: s,
-      x: x - Math.cos(Phaser.Math.DegToRad(30)) * dist,
-      y: y + Math.sin(Phaser.Math.DegToRad(30)) * dist,
-      alpha: { from: 1, to: 0 },
-      duration: 900,
-      ease: 'Quad.In',
-      onComplete: () => s.destroy(),
-    });
   }
 
   updateBackground(delta) {
-    const { width } = this.scale;
-    this.bgStars.forEach((star) => {
-      star.x -= star.speed * delta / 1000;
-      if (star.x < -3) star.x = width + 3;
+    if (!this.butterflies) return;
+    const { width, height } = this.scale;
+    const t = this.time.now;
+    this.butterflies.forEach((b) => {
+      b.vx += Phaser.Math.FloatBetween(-40, 40) * delta / 1000;
+      b.vy += Phaser.Math.FloatBetween(-40, 40) * delta / 1000;
+      b.vx = Phaser.Math.Clamp(b.vx, -40, 40);
+      b.vy = Phaser.Math.Clamp(b.vy, -30, 30);
+      b.x += b.vx * delta / 1000;
+      b.y += b.vy * delta / 1000 + Math.sin(t * 0.004 + b.phase) * 0.3;
+      if (b.x < 10 || b.x > width - 10) b.vx = -b.vx;
+      if (b.y < 10 || b.y > height - 10) b.vy = -b.vy;
+      b.x = Phaser.Math.Clamp(b.x, 10, width - 10);
+      b.y = Phaser.Math.Clamp(b.y, 10, height - 10);
+      const flap = Math.abs(Math.sin(t * 0.025 + b.phase));
+      b.wings.forEach((w) => { w.scaleX = 0.25 + flap * 0.75; });
     });
+  }
+
+  // 右上（SCORE の下）のミニマップと、今いるエリアの名前
+  createMinimap() {
+    const cell = 16;
+    const gap = 2;
+    const right = 788;
+    const top = 108;
+    const left = right - (cell * WORLD_COLS + gap * (WORLD_COLS - 1));
+    this.minimapCells = [];
+    for (let y = 0; y < WORLD_ROWS; y += 1) {
+      for (let x = 0; x < WORLD_COLS; x += 1) {
+        const r = this.add.rectangle(left + x * (cell + gap), top + y * (cell * 0.75 + gap), cell, cell * 0.75, 0x2e5a2a, 0.75)
+          .setOrigin(0).setStrokeStyle(1, 0xffffff, 0.5).setDepth(50);
+        r.ax = x; r.ay = y;
+        this.minimapCells.push(r);
+      }
+    }
+    this.areaNameText = this.add.text(right, top + WORLD_ROWS * (cell * 0.75 + gap) + 2, '', {
+      fontFamily: 'sans-serif', fontSize: '13px', fontStyle: 'bold', color: '#ffffff', stroke: '#1d2b10', strokeThickness: 3,
+    }).setOrigin(1, 0).setDepth(50);
+    this.visited = new Set([`${this.area.x},${this.area.y}`]);
+    this.updateMinimap();
+  }
+
+  updateMinimap() {
+    if (!this.minimapCells) return;
+    this.minimapCells.forEach((r) => {
+      const here = r.ax === this.area.x && r.ay === this.area.y;
+      const seen = this.visited.has(`${r.ax},${r.ay}`);
+      r.setFillStyle(here ? 0xffe27a : seen ? 0x7ccb5b : 0x2e5a2a, here ? 1 : 0.75);
+    });
+    this.areaNameText.setText(areaAt(this.area.x, this.area.y).name);
+  }
+
+  // プレイヤーが画面の端を押しているか調べ、となりのエリアがあれば移動する
+  checkAreaExit() {
+    const { width, height } = this.scale;
+    const half = PLAYER_SIZE / 2 + 1;
+    for (const p of this.players) {
+      if (p.down) continue;
+      const { x, y } = p.rect;
+      let dx = 0;
+      let dy = 0;
+      if (x <= half && p.moveX < 0) dx = -1;
+      else if (x >= width - half && p.moveX > 0) dx = 1;
+      else if (y <= half && p.moveY < 0) dy = -1;
+      else if (y >= height - half && p.moveY > 0) dy = 1;
+      if ((dx || dy) && areaAt(this.area.x + dx, this.area.y + dy)) {
+        this.changeArea(dx, dy);
+        return;
+      }
+    }
+  }
+
+  // となりのエリアへ移動（画面が暗転 → 敵・弾・アイテムを片付け → 反対側の端から登場）
+  changeArea(dx, dy) {
+    if (this.areaChanging) return;
+    this.areaChanging = true;
+    this.players.forEach((p) => p.rect.body.setVelocity(0, 0));
+    const cam = this.cameras.main;
+    cam.fadeOut(AREA_FADE_TIME, 0, 0, 0);
+    cam.once(Phaser.Cameras.Scene2D.Events.FADE_OUT_COMPLETE, () => {
+      if (!this.sys.isActive()) return;
+      const { width, height } = this.scale;
+      this.area = { x: this.area.x + dx, y: this.area.y + dy };
+      this.areaSerial += 1;
+      this.visited.add(`${this.area.x},${this.area.y}`);
+      this.clearField();
+      this.bgImage.setTexture(ensureAreaTexture(this, this.area.x, this.area.y));
+      const edge = PLAYER_SIZE / 2 + 30;
+      this.players.forEach((p) => {
+        let nx = p.rect.x;
+        let ny = p.rect.y;
+        if (dx === 1) nx = edge;
+        if (dx === -1) nx = width - edge;
+        if (dy === 1) ny = edge;
+        if (dy === -1) ny = height - edge;
+        // 2 人が重ならないように少しずらす
+        if (dx) ny = Phaser.Math.Clamp(ny, edge, height - edge);
+        if (dy) nx = Phaser.Math.Clamp(nx, edge, width - edge);
+        p.rect.body.reset(nx, ny);
+        p.cute.container.setPosition(nx, ny);
+      });
+      this.updateMinimap();
+      cam.fadeIn(AREA_FADE_TIME + 60, 0, 0, 0);
+      this.areaChanging = false;
+      this.showAreaName();
+    });
+  }
+
+  // エリアに入ったときに名前を画面上部にふわっと出す
+  showAreaName() {
+    const t = this.add.text(this.scale.width / 2, 150, areaAt(this.area.x, this.area.y).name, {
+      fontFamily: 'sans-serif', fontSize: '30px', fontStyle: 'bold', color: '#ffffff', stroke: '#2e5a2a', strokeThickness: 6,
+    }).setOrigin(0.5).setDepth(60).setAlpha(0);
+    this.tweens.add({ targets: t, alpha: 1, y: 140, duration: 300 });
+    this.tweens.add({ targets: t, alpha: 0, duration: 400, delay: 1300, onComplete: () => t.destroy() });
+  }
+
+  // 敵・ビーム・アイテムを全部消す（エリア移動のとき）
+  clearField() {
+    this.enemies.forEach((e) => { e.dead = true; e.destroy(); });
+    this.enemies = [];
+    this.beams.forEach((b) => b.destroy());
+    this.beams = [];
+    this.items.forEach((it) => it.destroy());
+    this.items = [];
   }
 
   // 必殺ゲージ（画面下の中央）と、カットイン演出用の部品を作っておく
@@ -1381,7 +1454,10 @@ export class MainScene extends Phaser.Scene {
       }
       const ready = this.add.text(GAUGE_X + GAUGE_W + 4, y, '', { ...font, fontSize: '12px', fontStyle: 'bold', color: '#ffe27a' })
         .setOrigin(0, 0.5).setDepth(52);
-      return { label, frame, fill, ticks, ready, shown: null };
+      // スキル（にゃんこ流星群）のクールタイム表示（ゲージの左）
+      const skill = this.add.text(GAUGE_X - 70, y, '', { ...font, fontSize: '12px', fontStyle: 'bold', color: '#c8f7ff' })
+        .setOrigin(1, 0.5).setDepth(52);
+      return { label, frame, fill, ticks, ready, skill, shown: null };
     });
 
     // カットイン（必殺技を使った瞬間に画面を横切る帯 + キャラの大きな顔 + 技名）
@@ -1430,8 +1506,16 @@ export class MainScene extends Phaser.Scene {
     this.gauges.forEach((g, i) => {
       const p = this.players[i];
       const visible = !!p;
-      [g.label, g.frame, g.fill, g.ticks, g.ready].forEach((o) => o.setVisible(visible));
+      [g.label, g.frame, g.fill, g.ticks, g.ready, g.skill].forEach((o) => o.setVisible(visible));
       if (!p) return;
+      // スキル：使えるときは「スキル C OK!」が光る、クールタイム中は残り秒数
+      const skillLeft = p.skillReadyAt - this.time.now;
+      if (skillLeft <= 0) {
+        const key = this.isTouch && i === 0 ? '' : ` ${i === 0 ? 'C' : 'H'}`;
+        g.skill.setText(`スキル${key} OK!`).setColor('#7affff').setAlpha(0.65 + Math.sin(time * 0.01) * 0.35);
+      } else {
+        g.skill.setText(`スキル ${(skillLeft / 1000).toFixed(1)}`).setColor('#a8b4c8').setAlpha(1);
+      }
       const full = p.special >= SPECIAL_MAX;
       const ok = this.isTouch && i === 0 ? '発動OK!' : `${i === 0 ? 'X' : 'P'}で発動!`;
       g.label.setText(this.players.length > 1 ? `${i + 1}P 必殺` : '必殺');
@@ -1449,6 +1533,10 @@ export class MainScene extends Phaser.Scene {
         g.ready.setAlpha(1);
       }
     });
+    if (this.skillBtn) {
+      const ready = this.players[0].skillReadyAt <= this.time.now;
+      this.skillBtn.setFillStyle(ready ? 0x7affff : 0xffffff, ready ? 0.3 + Math.sin(time * 0.01) * 0.12 : 0.12);
+    }
     if (this.specialBtn) {
       const ready = this.players[0].special >= SPECIAL_MAX;
       this.specialBtn.setFillStyle(ready ? 0xffcc00 : 0xffffff, ready ? 0.35 + Math.sin(time * 0.012) * 0.15 : 0.2);
@@ -1491,6 +1579,78 @@ export class MainScene extends Phaser.Scene {
         this.tweens.add({ targets: heart, scale: { from: 1.8, to: 1 }, duration: 350, delay: (k - before) * 80, ease: 'Back.Out' });
       }
     }
+  }
+
+  // オリジナルスキル「にゃんこ流星群」：魔法がはじけて、近くの敵に流れ星（pixelfx）が降りそそぐ
+  trySkill(player) {
+    if (!player || player.down || this.gameOver || this.countdownActive || this.cutinActive || this.areaChanging) return;
+    const now = this.time.now;
+    if (now < player.skillReadyAt) return;
+    player.skillReadyAt = now + SKILL_COOLDOWN;
+    const color = PLAYER_COLORS[player.colorIndex];
+    const palette = rampFrom(color);
+    const { x, y } = player.rect;
+    const serial = this.areaSerial;
+
+    // 1. ためて、はじける（mana-burst。原点は足元なので少し下にずらして体の中心ではじけさせる）
+    this.tweens.add({ targets: player.cute.body, scale: { from: 1.4, to: 1 }, duration: 350, ease: 'Back.Out' });
+    this.pfx.play(manaBurst, x, y + 40, { palette });
+    const shout = this.add.text(x, y - 46, `${SKILL_NAME}！`, {
+      fontFamily: 'sans-serif', fontSize: '22px', fontStyle: 'bold',
+      color: Phaser.Display.Color.IntegerToColor(color).rgba, stroke: '#1d1d33', strokeThickness: 6,
+    }).setOrigin(0.5).setDepth(60).setScale(0.4);
+    this.tweens.add({ targets: shout, scale: 1, duration: 260, ease: 'Back.Out' });
+    this.tweens.add({ targets: shout, y: y - 80, alpha: 0, duration: 500, delay: 700, onComplete: () => shout.destroy() });
+
+    // 2. ねらう場所：近い敵から順に最大 5 体。足りなければプレイヤーのまわりにも落とす
+    const { width, height } = this.scale;
+    const targets = this.enemies
+      .filter((e) => !e.dead)
+      .map((e) => ({ enemy: e, d: Phaser.Math.Distance.Between(x, y, e.x, e.y) }))
+      .filter((t) => t.d <= SKILL_RANGE)
+      .sort((a, b) => a.d - b.d)
+      .slice(0, SKILL_TARGETS)
+      .map((t) => ({ enemy: t.enemy, x: t.enemy.x, y: t.enemy.y }));
+    while (targets.length < SKILL_MIN_STRIKES) {
+      const a = Math.random() * Math.PI * 2;
+      const r = Phaser.Math.Between(90, 190);
+      targets.push({
+        enemy: null,
+        x: Phaser.Math.Clamp(x + Math.cos(a) * r, 40, width - 40),
+        y: Phaser.Math.Clamp(y + Math.sin(a) * r, 60, height - 40),
+      });
+    }
+
+    // 3. 流れ星を順番に落とす（star-fall）。着弾で範囲の敵をたおす
+    targets.forEach((t, i) => {
+      this.time.delayedCall(220 + i * SKILL_STRIKE_GAP, () => {
+        if (this.areaSerial !== serial || this.gameOver) return;
+        const tx = t.enemy && !t.enemy.dead ? t.enemy.x : t.x;
+        const ty = t.enemy && !t.enemy.dead ? t.enemy.y : t.y;
+        this.pfx.play(starFall, tx, ty + 12, { palette, seed: Phaser.Math.Between(1, 99999) });
+        // 着弾地点に小さな光の印（どこに落ちるか分かるように）
+        const mark = this.add.circle(tx, ty, SKILL_RADIUS * 0.5, color, 0.18).setStrokeStyle(2, 0xffffff, 0.7).setDepth(6);
+        this.tweens.add({ targets: mark, scale: { from: 0.4, to: 1 }, duration: SKILL_LAND_DELAY, ease: 'Sine.Out' });
+        this.time.delayedCall(SKILL_LAND_DELAY, () => {
+          mark.destroy();
+          if (this.areaSerial !== serial || this.gameOver) return;
+          this.skillImpact(player, tx, ty, color);
+        });
+      });
+    });
+  }
+
+  // 流れ星の着弾：光の輪が広がり、範囲の敵をたおす
+  skillImpact(player, x, y, color) {
+    this.cameras.main.shake(120, 0.004);
+    const ring = this.add.circle(x, y, SKILL_RADIUS, color, 0).setStrokeStyle(4, 0xffffff, 0.9).setDepth(9);
+    this.tweens.add({
+      targets: ring, scale: { from: 0.3, to: 1.1 }, alpha: { from: 1, to: 0 }, duration: 360, ease: 'Cubic.Out',
+      onComplete: () => ring.destroy(),
+    });
+    this.enemies
+      .filter((e) => !e.dead && Phaser.Math.Distance.Between(x, y, e.x, e.y) <= SKILL_RADIUS)
+      .forEach((e) => this.defeatEnemy(e, player));
   }
 
   // ゲージが満タンなら必殺技を発動（カットイン → 画面の敵を全部やっつける）
@@ -1974,31 +2134,51 @@ export class MainScene extends Phaser.Scene {
     const { width, height } = this.scale;
     const font = { fontFamily: 'sans-serif', color: '#ffffff' };
     const shade = this.add.rectangle(width / 2, height / 2, width, height, 0x000000, 0.6).setDepth(300).setAlpha(0);
-    const title = this.add.text(width / 2, height / 2 - 90, timeUp ? 'TIME UP!' : 'GAME OVER', {
+    const title = this.add.text(width / 2, height / 2 - 110, timeUp ? 'TIME UP!' : 'GAME OVER', {
       ...font, fontSize: '64px', fontStyle: 'bold', color: timeUp ? '#7affb0' : '#ff4466', stroke: '#ffffff', strokeThickness: 6,
     }).setOrigin(0.5).setDepth(301).setScale(0.3);
     this.updateTimerUI();
-    const scoreLine = this.add.text(width / 2, height / 2 - 20, `SCORE ${this.totalScore()}`, {
+    const scoreLine = this.add.text(width / 2, height / 2 - 40, `SCORE ${this.totalScore()}`, {
       ...font, fontSize: '44px', fontStyle: 'bold', color: '#ffe27a', stroke: '#0b1030', strokeThickness: 6,
     }).setOrigin(0.5).setDepth(301).setAlpha(0);
     const scores = this.players.map((p) => (this.players.length > 1 ? `${p.index + 1}P: ${p.score}` : `${p.score}`));
-    const result = this.add.text(width / 2, height / 2 + 35, `たおした敵　${scores.join('　')}`, {
+    const playTime = this.endless ? `　あそんだ時間 ${this.formatTime(this.elapsed)}` : '';
+    const result = this.add.text(width / 2, height / 2 + 15, `たおした敵　${scores.join('　')}${playTime}`, {
       ...font, fontSize: '22px', color: '#ffe27a',
     }).setOrigin(0.5).setDepth(301).setAlpha(0);
-    const retry = this.add.text(width / 2, height / 2 + 80,
+    const retry = this.add.text(width / 2, height / 2 + 60,
       this.isTouch ? 'タップでリトライ' : 'R キー / クリックでリトライ', {
         ...font, fontSize: '20px',
       }).setOrigin(0.5).setDepth(301).setAlpha(0);
+    // タイトルへ戻る（モードを選び直せる）
+    const toTitleBtn = this.add.rectangle(width / 2, height / 2 + 120, 220, 44, 0x2e5a2a, 0.9)
+      .setStrokeStyle(2, 0xffffff, 0.8).setDepth(302).setAlpha(0);
+    const toTitleLabel = this.add.text(width / 2, height / 2 + 120, this.isTouch ? 'タイトルへ' : 'タイトルへ（Enter）', {
+      ...font, fontSize: '18px', fontStyle: 'bold',
+    }).setOrigin(0.5).setDepth(303).setAlpha(0);
     this.tweens.add({ targets: shade, alpha: 1, duration: 400 });
     this.tweens.add({ targets: title, scale: 1, duration: 500, ease: 'Back.Out' });
-    this.tweens.add({ targets: [scoreLine, result, retry], alpha: 1, duration: 400, delay: 400 });
+    this.tweens.add({ targets: [scoreLine, result, retry, toTitleBtn, toTitleLabel], alpha: 1, duration: 400, delay: 400 });
     this.tweens.add({ targets: retry, alpha: 0.35, duration: 600, delay: 900, yoyo: true, repeat: -1 });
     // すぐ押しっぱなしの操作でリトライしてしまわないよう、少し待ってから受け付ける
     this.time.delayedCall(800, () => {
-      const restart = () => this.scene.restart();
+      let leaving = false;
+      const restart = () => {
+        if (leaving) return;
+        leaving = true;
+        this.scene.restart({ endless: this.endless }); // 同じモードでもう一度
+      };
+      const toTitle = () => {
+        if (leaving) return;
+        leaving = true;
+        this.scene.start('TitleScene');
+      };
       this.input.keyboard.once('keydown-R', restart);
+      this.input.keyboard.once('keydown-ENTER', toTitle);
       shade.setInteractive();
       shade.once('pointerdown', restart);
+      toTitleBtn.setInteractive({ useHandCursor: true });
+      toTitleBtn.once('pointerdown', toTitle);
     });
   }
 
@@ -2071,15 +2251,30 @@ export class MainScene extends Phaser.Scene {
       this.updateSpecialUI(time);
       return;
     }
-    // のこり時間（必殺技の演出中は止める）。0 になったら TIME UP
-    if (!this.cutinActive) this.timeLeft -= delta;
+    // のこり時間（必殺技の演出中は止める）。0 になったら TIME UP。時間無制限モードでは時間切れなし
+    if (this.endless) {
+      if (!this.cutinActive) this.elapsed += delta;
+    } else if (!this.cutinActive) {
+      this.timeLeft -= delta;
+    }
     this.updateTimerUI();
-    if (this.timeLeft <= 0) {
+    if (!this.endless && this.timeLeft <= 0) {
       this.timeLeft = 0;
       this.triggerGameOver(true);
       return;
     }
+    if (this.areaChanging) {
+      // エリア移動の暗転中はその場で待つ
+      this.players.forEach((player) => {
+        player.rect.body.setVelocity(0, 0);
+        this.updateCuteCharacter(player, 0, 0, time);
+      });
+      this.updateSpecialUI(time);
+      return;
+    }
     this.players.forEach((player) => {
+      player.moveX = 0;
+      player.moveY = 0;
       if (player.down) {
         player.rect.body.setVelocity(0, 0);
         this.updateCuteCharacter(player, 0, 0, time);
@@ -2087,6 +2282,8 @@ export class MainScene extends Phaser.Scene {
       }
       const { vx, vy, dash } = this.readMove(player);
       player.dash = dash;
+      player.moveX = vx;
+      player.moveY = vy;
       const speed = dash ? PLAYER_DASH_SPEED : PLAYER_SPEED;
       const velocity = new Phaser.Math.Vector2(vx, vy).normalize().scale(speed);
       player.rect.body.setVelocity(velocity.x, velocity.y);
@@ -2100,5 +2297,6 @@ export class MainScene extends Phaser.Scene {
     this.updateItems(time, delta);
     this.updateBackground(delta);
     this.updateSpecialUI(time);
+    if (!this.cutinActive) this.checkAreaExit();
   }
 }
