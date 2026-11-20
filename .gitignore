@@ -167,3 +167,6 @@ Thumbs.db
 *.pem
 *.key
 secrets/
+
+# pixelfx の確認用レンダリング出力
+vendor/pixelfx/records/

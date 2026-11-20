@@ -1,4 +1,6 @@
 import Phaser from 'phaser';
+import { PixelFxLayer, PIXEL_SCALE, rampFrom } from '../fx/PixelFxLayer.js';
+import * as collectBurst from 'pixelfx/fx/pickups/collect-burst';
 
 const PLAYER_SIZE = 32;
 const PLAYER_SPEED = 200; // px/秒
@@ -139,6 +141,9 @@ export class MainScene extends Phaser.Scene {
 
     // 背景（星空・星雲・惑星・流れ星）
     this.createBackground();
+
+    // pixelfx のドット絵エフェクトを重ねるレイヤー（キャラより手前・UI より奥）
+    this.pfx = new PixelFxLayer(this);
 
     // 1P（最初からいる）。2P は 2P 用のキーを押すと参加する
     this.players = [this.createPlayer(0, width / 2, height / 2, 0)];
@@ -438,6 +443,8 @@ export class MainScene extends Phaser.Scene {
     player.cute.ears.forEach((ear) => ear.setFillStyle(color));
     // 色が変わったらぴょこっと弾む
     this.tweens.add({ targets: player.cute.body, scale: { from: 1.2, to: 1 }, duration: 200, ease: 'Back.Out' });
+    // 新しい色のキラッ（pixelfx の collect-burst。原点は光の中心の 30 ドット下なので、その分ずらす）
+    this.pfx.play(collectBurst, player.rect.x, player.rect.y + 30 * PIXEL_SCALE, { palette: rampFrom(color) });
   }
 
   // 見た目のキャラを当たり判定の位置に合わせ、動きに応じてぴょこぴょこさせる

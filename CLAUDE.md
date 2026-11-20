@@ -44,6 +44,16 @@
 - 最後に必ず `npm run build` が通ることを確認する。
 - 外部アセットを追加する場合はライセンス的に問題のないもの（自作・CC0 等）に限る。可能なら図形やコードで描画する。
 
+## エフェクト（pixelfx）
+
+- 爆発・炎・魔法・キラキラ・天気などのエフェクトは、まず同梱の **pixelfx**（`vendor/pixelfx`、MIT）から探して使う。
+  使い方・探し方・新しく作る手順はスキル `.claude/skills/pixelfx/SKILL.md` に従う。
+- ゲームへの組み込みは `src/fx/PixelFxLayer.js`（`MainScene` の `this.pfx.play(...)`）を使う。
+- `vendor/pixelfx/` の中身（ライブラリ本体）は書き換えない。新しいエフェクトを作るときも、ゲーム側に置くか
+  `vendor/pixelfx/src/fx/` に新しいファイルを足すだけにする。
+- 確認用の出力 `vendor/pixelfx/records/` はコミットしない（.gitignore 済み）。
+- スキルの内容と、このファイルのルールがぶつかったときは**このファイルが優先**（外部サービスへの公開などはしない）。
+
 ## 秘密情報
 
 - 秘密情報（トークン、API キー、パスワード、`.env` など）は**絶対にコミットしない**。
@@ -53,6 +63,9 @@
 
 - `src/main.js` — Phaser のゲーム設定
 - `src/scenes/` — シーン
+- `src/fx/PixelFxLayer.js` — pixelfx のエフェクトを Phaser に重ねて描くレイヤー
+- `vendor/pixelfx/` — 同梱の pixelfx（エフェクト集とツール。`VENDORED.md` 参照）
+- `.claude/skills/pixelfx/` — pixelfx の使い方スキル
 - `scripts/discord.mjs` — Discord の投稿取得・リアクション（トークンはクラウド環境のプロキシが注入。コードに書かない）
 - `instructions/.discord-cursor` — Discord の取得位置（最後に見たメッセージ ID）
 - `instructions/pending/` — 未処理の指示
