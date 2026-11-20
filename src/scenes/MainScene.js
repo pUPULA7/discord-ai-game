@@ -89,6 +89,16 @@ const HURT_DISTANCE = ENEMY_RADIUS + 18; // 敵とこれより近いと「触れ
 const MAX_BEAMS = 300; // 重ねがけで弾が増えすぎないための上限
 const TEST_ENEMY_MAX = 30; // テストパネルの「敵+5」で出せる上限
 
+// 必殺技
+const SPECIAL_MAX = 10; // 敵をこの数たおすとゲージが満タンになり、必殺技が使える
+const SPECIAL_CUTIN_TIME = 1300; // カットイン演出の長さ（ミリ秒）。この間は敵が止まる
+const SPECIAL_NAME = 'ねこみみ スターバースト！！';
+const SPECIAL_BUTTON = { x: 590, y: 400 };
+const GAUGE_X = 310; // 画面下中央の必殺ゲージの位置（1P が下、2P がその上）
+const GAUGE_Y = 578;
+const GAUGE_W = 150;
+const GAUGE_H = 12;
+
 // 点 (px, py) と線分 (ax, ay)-(bx, by) の距離
 function distToSegment(px, py, ax, ay, bx, by) {
   const dx = bx - ax;
@@ -128,6 +138,17 @@ export class MainScene extends Phaser.Scene {
     this.p2Keys = this.input.keyboard.addKeys('I,J,K,L,U,O');
     this.beamKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.Z);
 
+    // 必殺技：X キー = 1P / P キー = 2P（ゲージが満タンのときだけ）
+    this.cutinActive = false;
+    this.input.keyboard.on('keydown-X', (event) => {
+      if (!event.repeat) this.trySpecial(this.players[0]);
+    });
+    this.input.keyboard.on('keydown-P', (event) => {
+      if (event.repeat) return;
+      if (!this.players[1]) { this.joinP2(); return; } // 最初の 1 回は参加だけ
+      this.trySpecial(this.players[1]);
+    });
+
     // スペースキー：1P の色を切り替える / O キー：2P の色を切り替える
     this.input.keyboard.on('keydown-SPACE', (event) => {
       if (event.repeat) return; // 押しっぱなしでは連続で変えない
@@ -159,9 +180,9 @@ export class MainScene extends Phaser.Scene {
 
     this.isTouch = isTouchDevice(this.game);
     const helpText = this.isTouch
-      ? '左下のスティックで移動　「加速」を押している間は加速　「色」で色チェンジ　「ビーム」で発射'
-      : '1P: 矢印キー / WASD で移動　左シフトで加速　スペースで色チェンジ　Z でビーム\n'
-        + '2P: IJKL で移動　右シフトで加速　O で色チェンジ　U でビーム（押すと参加）';
+      ? '左下のスティックで移動　「加速」を押している間は加速　「色」で色チェンジ　「ビーム」で発射　「必殺」で必殺技'
+      : '1P: 矢印キー / WASD で移動　左シフトで加速　スペースで色チェンジ　Z でビーム　X で必殺技\n'
+        + '2P: IJKL で移動　右シフトで加速　O で色チェンジ　U でビーム　P で必殺技（押すと参加）';
 
     // スマホのときだけタッチ操作 UI を出す（1P を操作）
     this.stickVector = new Phaser.Math.Vector2(0, 0);
@@ -190,6 +211,9 @@ export class MainScene extends Phaser.Scene {
       wordWrap: { width: 776, useAdvancedWrap: true },
     }).setDepth(50);
 
+    // 必殺ゲージ（画面下）とカットイン演出の準備
+    this.createSpecialUI();
+
     // テスト用パネル（右上の「テスト」ボタン / T キー）
     this.createTestUI();
 
@@ -198,7 +222,7 @@ export class MainScene extends Phaser.Scene {
       delay: ENEMY_SPAWN_INTERVAL,
       loop: true,
       callback: () => {
-        if (this.enemies.length < ENEMY_MAX) this.spawnEnemy();
+        if (this.enemies.length < ENEMY_MAX && !this.cutinActive) this.spawnEnemy();
       },
     });
   }
@@ -221,6 +245,7 @@ export class MainScene extends Phaser.Scene {
       shiftDown: false,
       dash: false,
       score: 0,
+      special: 0, // 必殺ゲージ（0〜SPECIAL_MAX）
       label: null,
       powers: {}, // 持っているアイテム効果 { 種類: 効果が切れる時刻 }（重ねがけ可。テストで付けたものは Infinity）
       sats: null, // えいせいの玉
@@ -245,6 +270,7 @@ export class MainScene extends Phaser.Scene {
     const p2 = this.createPlayer(1, width / 2 + 80, height / 2, P2_START_COLOR_INDEX);
     this.players.push(p2);
     this.players[0].label.setVisible(true);
+    this.updateSpecialUI();
     this.tweens.add({ targets: p2.cute.container, scale: { from: 0, to: 1 }, duration: 300, ease: 'Back.Out' });
     this.updateScoreText();
     return p2;
@@ -429,6 +455,10 @@ export class MainScene extends Phaser.Scene {
       beamBtn.setFillStyle(0xffffff, 0.45);
     });
     this.beamBtn = beamBtn;
+
+    const specialBtn = makeButton(SPECIAL_BUTTON, '必殺');
+    specialBtn.on('pointerdown', () => this.trySpecial(this.players[0]));
+    this.specialBtn = specialBtn;
 
     // スティック：画面の左半分（ボタン以外）を触ると反応
     this.input.on('pointerdown', (pointer, over) => {
@@ -794,6 +824,8 @@ export class MainScene extends Phaser.Scene {
     if (byPlayer) {
       byPlayer.score += 1;
       this.updateScoreText();
+      // 必殺技でたおした分はゲージに入らない（連発防止）
+      if (!enemy.bySpecial) this.addSpecial(byPlayer, 1);
     }
     // ときどきアイテムを落とす（21 種類からランダム）
     if (Math.random() < ITEM_DROP_CHANCE) {
@@ -823,6 +855,7 @@ export class MainScene extends Phaser.Scene {
 
   // 敵はいちばん近いプレイヤーにふらふら近づいてくる（凍っている間は止まる）
   updateEnemies(time, delta) {
+    if (this.cutinActive) return; // カットイン中は敵も止まる
     this.enemies.forEach((enemy) => {
       const frozen = enemy.frozenUntil > time;
       if (!frozen && enemy.ice.visible) enemy.ice.setVisible(false);
@@ -1006,11 +1039,12 @@ export class MainScene extends Phaser.Scene {
       { label: '全部ON', color: 0x00e436, tap: () => this.setAllTestPowers(true) },
       { label: '全部OFF', color: 0xff004d, tap: () => this.setAllTestPowers(false) },
       { label: '敵 +5', color: 0x8e44ad, tap: () => this.spawnTestEnemies(5) },
+      { label: '必殺MAX', color: 0xffcc00, tap: () => this.players.forEach((p) => this.addSpecial(p, SPECIAL_MAX)) },
       { label: '閉じる', color: 0xffffff, tap: () => this.toggleTestPanel() },
     ];
     bottom.forEach((b, i) => {
-      const x = 145 + i * 170;
-      makeBtn(x, 400, 150, 40, b.color, b.tap);
+      const x = 100 + i * 150;
+      makeBtn(x, 400, 136, 40, b.color, b.tap);
       panel.add(this.add.text(x, 400, b.label, { ...font, fontSize: '16px', fontStyle: 'bold' }).setOrigin(0.5));
     });
     panel.add(this.add.text(400, 455, '効果は参加中のプレイヤー全員に付きます。T / Esc / 「閉じる」でパネルを閉じて遊べます', {
@@ -1203,6 +1237,168 @@ export class MainScene extends Phaser.Scene {
     });
   }
 
+  // 必殺ゲージ（画面下の中央）と、カットイン演出用の部品を作っておく
+  createSpecialUI() {
+    const font = { fontFamily: 'sans-serif', color: '#ffffff', stroke: '#0b1030', strokeThickness: 3 };
+    this.gauges = [0, 1].map((i) => {
+      const y = GAUGE_Y - i * 22;
+      const label = this.add.text(GAUGE_X - 8, y, '', { ...font, fontSize: '13px', fontStyle: 'bold' })
+        .setOrigin(1, 0.5).setDepth(50);
+      const frame = this.add.rectangle(GAUGE_X, y, GAUGE_W, GAUGE_H, 0x0b1030, 0.75)
+        .setOrigin(0, 0.5).setStrokeStyle(2, 0xffffff, 0.8).setDepth(50);
+      const fill = this.add.rectangle(GAUGE_X + 2, y, 0, GAUGE_H - 4, 0xffcc00)
+        .setOrigin(0, 0.5).setDepth(51);
+      const ticks = this.add.graphics().setDepth(52);
+      ticks.lineStyle(1, 0x0b1030, 0.6);
+      for (let k = 1; k < SPECIAL_MAX; k += 1) {
+        const tx = GAUGE_X + (GAUGE_W * k) / SPECIAL_MAX;
+        ticks.lineBetween(tx, y - GAUGE_H / 2 + 2, tx, y + GAUGE_H / 2 - 2);
+      }
+      const ready = this.add.text(GAUGE_X + GAUGE_W + 4, y, '', { ...font, fontSize: '12px', fontStyle: 'bold', color: '#ffe27a' })
+        .setOrigin(0, 0.5).setDepth(52);
+      return { label, frame, fill, ticks, ready, shown: null };
+    });
+
+    // カットイン（必殺技を使った瞬間に画面を横切る帯 + キャラの大きな顔 + 技名）
+    const { width, height } = this.scale;
+    const ci = this.add.container(0, 0).setDepth(300).setVisible(false);
+    const dim = this.add.rectangle(width / 2, height / 2, width, height, 0x000000, 0.55);
+    const band = this.add.polygon(0, 0, [0, 190, width, 130, width, 410, 0, 470], 0xffcc00).setOrigin(0, 0);
+    const bandEdge = this.add.graphics();
+    bandEdge.lineStyle(6, 0xffffff, 1);
+    bandEdge.lineBetween(0, 190, width, 130);
+    bandEdge.lineBetween(0, 470, width, 410);
+    const lines = this.add.graphics(); // 集中線っぽいスピード線
+    const portrait = this.createCuteCharacter(0, 0, 0xffcc00);
+    portrait.container.setDepth(0).setScale(5);
+    const title = this.add.text(width - 40, 250, '必殺！', {
+      fontFamily: 'sans-serif', fontSize: '56px', fontStyle: 'bold', color: '#ffffff',
+      stroke: '#1d1d33', strokeThickness: 8,
+    }).setOrigin(1, 0.5);
+    const name = this.add.text(width - 40, 330, SPECIAL_NAME, {
+      fontFamily: 'sans-serif', fontSize: '38px', fontStyle: 'bold', color: '#ffe27a',
+      stroke: '#1d1d33', strokeThickness: 7,
+    }).setOrigin(1, 0.5);
+    const who = this.add.text(width - 40, 385, '', {
+      fontFamily: 'sans-serif', fontSize: '20px', fontStyle: 'bold', color: '#ffffff',
+      stroke: '#1d1d33', strokeThickness: 5,
+    }).setOrigin(1, 0.5);
+    ci.add([dim, band, lines, bandEdge, portrait.container, title, name, who]);
+    this.cutin = { container: ci, dim, band, lines, portrait, title, name, who };
+    this.updateSpecialUI();
+  }
+
+  addSpecial(player, n) {
+    const before = player.special;
+    player.special = Math.min(SPECIAL_MAX, player.special + n);
+    if (before < SPECIAL_MAX && player.special === SPECIAL_MAX) {
+      // 満タンになったらゲージがぷるんと弾む
+      const g = this.gauges[player.index];
+      this.tweens.add({ targets: [g.frame, g.fill], scaleY: { from: 1.8, to: 1 }, duration: 300, ease: 'Back.Out' });
+    }
+    this.updateSpecialUI();
+  }
+
+  updateSpecialUI(time = 0) {
+    if (!this.gauges) return;
+    this.gauges.forEach((g, i) => {
+      const p = this.players[i];
+      const visible = !!p;
+      [g.label, g.frame, g.fill, g.ticks, g.ready].forEach((o) => o.setVisible(visible));
+      if (!p) return;
+      const full = p.special >= SPECIAL_MAX;
+      const ok = this.isTouch && i === 0 ? '発動OK!' : `${i === 0 ? 'X' : 'P'}で発動!`;
+      g.label.setText(this.players.length > 1 ? `${i + 1}P 必殺` : '必殺');
+      const w = ((GAUGE_W - 4) * p.special) / SPECIAL_MAX;
+      if (g.fill.width !== w) g.fill.setSize(w, GAUGE_H - 4);
+      if (full) {
+        // 満タン：虹色にきらきら + 「OK!」
+        const color = Phaser.Display.Color.HSVToRGB((time / 1200 + i * 0.5) % 1, 0.75, 1).color;
+        g.fill.setFillStyle(color);
+        g.ready.setText(ok);
+        g.ready.setAlpha(0.6 + Math.sin(time * 0.012) * 0.4);
+      } else {
+        g.fill.setFillStyle(PLAYER_COLORS[p.colorIndex]);
+        g.ready.setText(`${p.special}/${SPECIAL_MAX}`);
+        g.ready.setAlpha(1);
+      }
+    });
+    if (this.specialBtn) {
+      const ready = this.players[0].special >= SPECIAL_MAX;
+      this.specialBtn.setFillStyle(ready ? 0xffcc00 : 0xffffff, ready ? 0.35 + Math.sin(time * 0.012) * 0.15 : 0.2);
+    }
+  }
+
+  // ゲージが満タンなら必殺技を発動（カットイン → 画面の敵を全部やっつける）
+  trySpecial(player) {
+    if (!player || this.cutinActive || player.special < SPECIAL_MAX) return;
+    player.special = 0;
+    this.updateSpecialUI();
+    this.cutinActive = true;
+    this.playCutin(player, () => this.specialBlast(player));
+  }
+
+  playCutin(player, onDone) {
+    const { width } = this.scale;
+    const c = this.cutin;
+    const color = PLAYER_COLORS[player.colorIndex];
+    c.band.setFillStyle(color);
+    c.portrait.body.setFillStyle(color);
+    c.portrait.ears.forEach((e) => e.setFillStyle(color));
+    c.who.setText(this.players.length > 1 ? `${player.index + 1}P の必殺技` : '');
+    // スピード線
+    c.lines.clear();
+    c.lines.lineStyle(3, 0xffffff, 0.55);
+    for (let k = 0; k < 18; k += 1) {
+      const y = Phaser.Math.Between(150, 450);
+      const x = Phaser.Math.Between(0, width);
+      c.lines.lineBetween(x, y, x + Phaser.Math.Between(60, 180), y - 10);
+    }
+    c.container.setVisible(true);
+    c.dim.setAlpha(0);
+    c.band.x = width; c.lines.x = width;
+    c.portrait.container.setPosition(-200, 310).setAngle(-8);
+    [c.title, c.name, c.who].forEach((t) => { t.setAlpha(0); t.x = width + 200; });
+    this.tweens.add({ targets: c.dim, alpha: 1, duration: 150 });
+    this.tweens.add({ targets: [c.band, c.lines], x: 0, duration: 220, ease: 'Cubic.Out' });
+    this.tweens.add({ targets: c.lines, x: -120, duration: 800, delay: 220 });
+    this.tweens.add({ targets: c.portrait.container, x: 165, duration: 320, delay: 120, ease: 'Back.Out' });
+    this.tweens.add({ targets: c.portrait.container, x: 190, duration: 550, delay: 440 });
+    [c.title, c.name, c.who].forEach((t, k) => {
+      this.tweens.add({ targets: t, x: width - 40, alpha: 1, duration: 260, delay: 220 + k * 120, ease: 'Back.Out' });
+    });
+    this.cameras.main.shake(SPECIAL_CUTIN_TIME * 0.4, 0.004);
+    // 帯ごと画面の外へ抜けていく
+    this.time.delayedCall(SPECIAL_CUTIN_TIME - 260, () => {
+      this.tweens.add({ targets: [c.band, c.lines, c.portrait.container, c.title, c.name, c.who], x: `-=${width + 300}`, duration: 260, ease: 'Cubic.In' });
+      this.tweens.add({ targets: c.dim, alpha: 0, duration: 260 });
+    });
+    this.time.delayedCall(SPECIAL_CUTIN_TIME, () => {
+      c.container.setVisible(false);
+      onDone();
+    });
+  }
+
+  // 必殺技の本体：まぶしい光 + 衝撃波で、画面上の敵を全部やっつける
+  specialBlast(player) {
+    const { x, y } = player.rect;
+    const color = PLAYER_COLORS[player.colorIndex];
+    this.cameras.main.flash(250, 255, 255, 255);
+    this.cameras.main.shake(300, 0.012);
+    for (let k = 0; k < 3; k += 1) {
+      const ring = this.add.circle(x, y, 20, color, 0).setStrokeStyle(10 - k * 3, k === 1 ? 0xffffff : color).setDepth(20);
+      this.tweens.add({ targets: ring, scale: 50, alpha: 0, duration: 700, delay: k * 110, ease: 'Cubic.Out', onComplete: () => ring.destroy() });
+    }
+    const targets = this.enemies.slice();
+    targets.forEach((e) => {
+      e.bySpecial = true;
+      const d = Phaser.Math.Distance.Between(x, y, e.x, e.y);
+      // 衝撃波が届いた順にはじける
+      this.time.delayedCall(Math.min(500, d * 0.6), () => this.defeatEnemy(e, player));
+    });
+    this.time.delayedCall(520, () => { this.cutinActive = false; });
+  }
+
   updateScoreText() {
     if (!this.scoreText) return;
     const parts = this.players.map((p) => (this.players.length > 1 ? `${p.index + 1}P: ${p.score}` : `${p.score}`));
@@ -1272,5 +1468,6 @@ export class MainScene extends Phaser.Scene {
     this.updateSatellites(time);
     this.updateItems(time, delta);
     this.updateBackground(delta);
+    this.updateSpecialUI(time);
   }
 }
