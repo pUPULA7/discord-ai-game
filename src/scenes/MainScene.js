@@ -60,6 +60,10 @@ const ITEM_TYPES = {
   magnet: { name: '磁石', mark: '磁', color: 0xff3b3b, desc: 'アイテムを吸い寄せる' },
 };
 const ITEM_KEYS = Object.keys(ITEM_TYPES);
+// 回復アイテム（ドロップしたアイテムのうち約 1/10 が回復アイテムになる。回復量 1〜3、大きいほど出にくい）
+const HEAL_ITEM_CHANCE = 0.1;
+const HEAL_ITEM_COLOR = 0xff5c8a;
+const HEAL_WEIGHTS = [[1, 60], [2, 30], [3, 10]]; // [回復量, 重み]（1: 60% / 2: 30% / 3: 10%）
 const SPREAD_ANGLES = [-16, 0, 16]; // 散弾の広がり（度）
 const HOMING_SPEED = 520; // ホーミング弾の速さ（px/秒）
 const HOMING_TURN_RATE = 6; // ホーミング弾が曲がる速さ（ラジアン/秒）
@@ -856,7 +860,8 @@ export class MainScene extends Phaser.Scene {
     }
     // ときどきアイテムを落とす（21 種類からランダム）
     if (Math.random() < ITEM_DROP_CHANCE) {
-      this.spawnItem(enemy.x, enemy.y, Phaser.Utils.Array.GetRandom(ITEM_KEYS));
+      if (Math.random() < HEAL_ITEM_CHANCE) this.spawnItem(enemy.x, enemy.y, 'heal', this.rollHealAmount());
+      else this.spawnItem(enemy.x, enemy.y, Phaser.Utils.Array.GetRandom(ITEM_KEYS));
     }
     for (let i = 0; i < 8; i += 1) {
       const a = (Math.PI * 2 * i) / 8;
@@ -913,22 +918,45 @@ export class MainScene extends Phaser.Scene {
   }
 
   // アイテムを置く（画面内に収める）。ふわふわ浮いて、時間がたつと点滅して消える
-  spawnItem(x, y, type) {
+  // 回復量を決める（1: 60% / 2: 30% / 3: 10%）
+  rollHealAmount() {
+    const total = HEAL_WEIGHTS.reduce((sum, [, w]) => sum + w, 0);
+    let r = Math.random() * total;
+    for (const [amount, w] of HEAL_WEIGHTS) {
+      if (r < w) return amount;
+      r -= w;
+    }
+    return 1;
+  }
+
+  spawnItem(x, y, type, heal = 0) {
     const { width, height } = this.scale;
     const ix = Phaser.Math.Clamp(x, ITEM_RADIUS + 4, width - ITEM_RADIUS - 4);
     const iy = Phaser.Math.Clamp(y, ITEM_RADIUS + 4, height - ITEM_RADIUS - 4);
-    const def = ITEM_TYPES[type];
-    const glow = this.add.circle(0, 0, ITEM_RADIUS + 6, def.color, 0.3);
-    const orb = this.add.circle(0, 0, ITEM_RADIUS, def.color).setStrokeStyle(2, 0xffffff);
-    const mark = this.add.text(0, 0, def.mark, {
-      fontFamily: 'sans-serif',
-      fontSize: '15px',
-      fontStyle: 'bold',
-      color: '#1d1d33',
-    }).setOrigin(0.5);
-    const inner = this.add.container(0, 0, [glow, orb, mark]);
+    const isHeal = type === 'heal';
+    const color = isHeal ? HEAL_ITEM_COLOR : ITEM_TYPES[type].color;
+    const glow = this.add.circle(0, 0, ITEM_RADIUS + 6, color, 0.3);
+    const parts = [glow];
+    if (isHeal) {
+      // 白い丸の中にハート + 回復量の数字
+      parts.push(this.add.circle(0, 0, ITEM_RADIUS, 0xffffff).setStrokeStyle(2, color));
+      parts.push(this.add.image(0, -1, 'heart').setTint(color).setScale(0.95));
+      parts.push(this.add.text(0, -2, `${heal}`, {
+        fontFamily: 'sans-serif', fontSize: '12px', fontStyle: 'bold', color: '#ffffff',
+      }).setOrigin(0.5));
+    } else {
+      parts.push(this.add.circle(0, 0, ITEM_RADIUS, color).setStrokeStyle(2, 0xffffff));
+      parts.push(this.add.text(0, 0, ITEM_TYPES[type].mark, {
+        fontFamily: 'sans-serif',
+        fontSize: '15px',
+        fontStyle: 'bold',
+        color: '#1d1d33',
+      }).setOrigin(0.5));
+    }
+    const inner = this.add.container(0, 0, parts);
     const item = this.add.container(ix, iy, [inner]).setDepth(7);
     item.type = type;
+    item.heal = heal;
     item.expireAt = this.time.now + ITEM_LIFETIME;
     item.inner = inner;
     this.tweens.add({ targets: inner, y: -4, duration: 600, yoyo: true, repeat: -1, ease: 'Sine.InOut' });
@@ -980,6 +1008,10 @@ export class MainScene extends Phaser.Scene {
   }
 
   pickUpItem(player, item, time) {
+    if (item.type === 'heal') {
+      this.healPlayer(player, item);
+      return;
+    }
     const def = ITEM_TYPES[item.type];
     // 重ねがけ：持っている効果はそのまま。同じ種類なら残り時間が 10 秒に戻る（テストで付けた無制限はそのまま）
     if (player.powers[item.type] !== Infinity) player.powers[item.type] = time + POWER_DURATION;
@@ -1359,6 +1391,44 @@ export class MainScene extends Phaser.Scene {
     }
   }
 
+  // 回復アイテム：体力が 1〜3 回復（最大 5 まで）
+  healPlayer(player, item) {
+    const { x, y } = item;
+    const before = player.hp;
+    player.hp = Math.min(PLAYER_MAX_HP, player.hp + item.heal);
+    const gained = player.hp - before;
+    item.destroy();
+    const ring = this.add.circle(x, y, ITEM_RADIUS, HEAL_ITEM_COLOR, 0).setStrokeStyle(3, HEAL_ITEM_COLOR).setDepth(9);
+    this.tweens.add({ targets: ring, scale: 3, alpha: 0, duration: 350, onComplete: () => ring.destroy() });
+    // 自機：やさしく光ってぷにっと弾む + 小さなハートが舞い上がる
+    const px = player.rect.x;
+    const py = player.rect.y;
+    const glow = this.add.circle(px, py, 26, 0x7dffb0, 0.6).setDepth(12);
+    this.tweens.add({ targets: glow, scale: 1.8, alpha: 0, duration: 420, onComplete: () => glow.destroy() });
+    this.tweens.add({ targets: player.cute.body, scale: { from: 1.25, to: 1 }, duration: 300, ease: 'Back.Out' });
+    for (let k = 0; k < 4; k += 1) {
+      const h = this.add.image(px + Phaser.Math.Between(-18, 18), py, 'heart').setTint(0xff5c8a).setScale(0.6).setDepth(12);
+      this.tweens.add({
+        targets: h, y: py - 40 - k * 8, alpha: 0, duration: 700, delay: k * 70, onComplete: () => h.destroy(),
+      });
+    }
+    const pop = this.add.text(x, y - 20, gained > 0 ? `体力 +${gained}!` : '体力MAX!', {
+      fontFamily: 'sans-serif', fontSize: '16px', fontStyle: 'bold', color: '#ff7aa0',
+      stroke: '#ffffff', strokeThickness: 4,
+    }).setOrigin(0.5).setDepth(60);
+    this.tweens.add({ targets: pop, y: y - 50, alpha: 0, duration: 900, onComplete: () => pop.destroy() });
+    // UI：増えたハートがぽんっと出てくる
+    this.updateHpUI();
+    const row = this.hpRows && this.hpRows[player.index];
+    if (row) {
+      for (let k = before; k < player.hp; k += 1) {
+        const heart = row.hearts[k];
+        this.tweens.killTweensOf(heart);
+        this.tweens.add({ targets: heart, scale: { from: 1.8, to: 1 }, duration: 350, delay: (k - before) * 80, ease: 'Back.Out' });
+      }
+    }
+  }
+
   // ゲージが満タンなら必殺技を発動（カットイン → 画面の敵を全部やっつける）
   trySpecial(player) {
     if (!player || player.down || this.gameOver || this.cutinActive || player.special < SPECIAL_MAX) return;
@@ -1408,43 +1478,94 @@ export class MainScene extends Phaser.Scene {
     });
   }
 
-  // カットイン用：可愛い水着の女の子（ねこみみカチューシャ・フリルのワンピース水着・浮き輪・ピース）
+  // カットイン用：アニメ調の美少女（大きなキラキラ瞳・とがったあご・つやのある髪・ねこみみカチューシャ・
+  // フリルのワンピース水着・浮き輪・ウインクでピース）。すべてコードで描画するオリジナルデザイン
   drawSwimsuitGirl(g, suitColor) {
-    const line = 0x1d1d33;
-    const skin = 0xffe2cc;
-    const hair = 0x8a5a3c;
-    const hairDark = 0x6a4128;
+    const line = 0x2a1830;
+    const skin = 0xfff0e6;
+    const skinShade = 0xf6cdbd;
+    const hair = 0xf2a7c3; // パステルピンクの髪
+    const hairDark = 0xd5779e;
+    const hairLight = 0xffe3ee;
+    // 2 次ベジェ曲線の点列
+    const bez = (p0, p1, p2, n = 10) => {
+      const pts = [];
+      for (let k = 0; k <= n; k += 1) {
+        const t = k / n;
+        const u = 1 - t;
+        pts.push({ x: u * u * p0[0] + 2 * u * t * p1[0] + t * t * p2[0], y: u * u * p0[1] + 2 * u * t * p1[1] + t * t * p2[1] });
+      }
+      return pts;
+    };
+    const shape = (pts, fill, stroke = line, width = 3) => {
+      g.fillStyle(fill, 1);
+      g.fillPoints(pts, true);
+      if (stroke !== null) {
+        g.lineStyle(width, stroke, 1);
+        g.strokePoints(pts, true);
+      }
+    };
+    // 毛束（根元 → 先端がとがる）
+    const lock = (x0, y0, cx, cy, x1, y1, w, fill = hair) => {
+      const left = bez([x0 - w, y0], [cx - w * 0.6, cy], [x1, y1]);
+      const right = bez([x1, y1], [cx + w * 0.6, cy], [x0 + w, y0]);
+      shape([...left, ...right], fill);
+    };
     g.clear();
-    // うしろ髪とツインテール
-    g.fillStyle(hair, 1);
+
+    // うしろ髪とツインテール（ふんわり流れる長い毛束）
+    lock(-70, -80, -150, 20, -110, 175, 34);
+    lock(-80, -70, -120, 40, -70, 165, 22, hairDark);
+    lock(70, -80, 150, 20, 110, 175, 34);
+    lock(80, -70, 120, 40, 70, 165, 22, hairDark);
     g.lineStyle(4, line, 1);
-    g.fillEllipse(-92, 10, 56, 170); g.strokeEllipse(-92, 10, 56, 170);
-    g.fillEllipse(92, 10, 56, 170); g.strokeEllipse(92, 10, 56, 170);
-    g.fillCircle(0, -60, 84); g.strokeCircle(0, -60, 84);
-    g.fillStyle(0xff77a8, 1); // 髪ゴム
-    g.fillCircle(-80, -70, 11); g.fillCircle(80, -70, 11);
-    // ねこみみカチューシャ
+    g.fillStyle(hair, 1);
+    g.fillCircle(0, -62, 80); g.strokeCircle(0, -62, 80);
+    lock(-40, -40, -66, 40, -50, 70, 26); // 顔の横のうしろ髪
+    lock(40, -40, 66, 40, 50, 70, 26);
+    // リボンの髪ゴム
+    [-1, 1].forEach((s) => {
+      const bx = s * 78;
+      g.fillStyle(0xff4f8b, 1);
+      g.lineStyle(3, line, 1);
+      g.fillTriangle(bx, -76, bx - s * 26, -96, bx - s * 22, -58);
+      g.strokeTriangle(bx, -76, bx - s * 26, -96, bx - s * 22, -58);
+      g.fillTriangle(bx, -76, bx + s * 22, -98, bx + s * 26, -60);
+      g.strokeTriangle(bx, -76, bx + s * 22, -98, bx + s * 26, -60);
+      g.fillCircle(bx, -76, 8); g.strokeCircle(bx, -76, 8);
+    });
+
+    // ねこみみカチューシャ（プレイヤーの色）
+    g.lineStyle(4, line, 1);
     g.fillStyle(suitColor, 1);
-    g.fillTriangle(-70, -110, -30, -140, -78, -175); g.strokeTriangle(-70, -110, -30, -140, -78, -175);
-    g.fillTriangle(70, -110, 30, -140, 78, -175); g.strokeTriangle(70, -110, 30, -140, 78, -175);
-    g.fillStyle(0xff9ebb, 1);
-    g.fillTriangle(-64, -122, -42, -138, -70, -160);
-    g.fillTriangle(64, -122, 42, -138, 70, -160);
-    // 首・肩・腕
+    g.fillTriangle(-68, -112, -28, -136, -76, -178); g.strokeTriangle(-68, -112, -28, -136, -76, -178);
+    g.fillTriangle(68, -112, 28, -136, 76, -178); g.strokeTriangle(68, -112, 28, -136, 76, -178);
+    g.fillStyle(0xffc2d6, 1);
+    g.fillTriangle(-62, -122, -40, -136, -70, -162);
+    g.fillTriangle(62, -122, 40, -136, 70, -162);
+
+    // 首・肩・腕（ほっそり）
     g.fillStyle(skin, 1);
-    g.fillRect(-16, 0, 32, 34);
-    g.fillEllipse(0, 70, 150, 80); g.strokeEllipse(0, 70, 150, 80);
-    g.fillEllipse(-74, 100, 34, 90); g.strokeEllipse(-74, 100, 34, 90);
-    // ワンピース水着（肩ひも + フリル）
+    g.lineStyle(3, line, 1);
+    g.fillRect(-12, 6, 24, 34);
+    g.fillStyle(skinShade, 1); g.fillRect(-12, 6, 24, 8); // あごの影
+    g.fillStyle(skin, 1);
+    g.fillEllipse(0, 72, 132, 70); g.strokeEllipse(0, 72, 132, 70);
+    g.lineBetween(-12, 22, -12, 40); g.lineBetween(12, 22, 12, 40);
+    g.fillEllipse(-66, 104, 26, 84); g.strokeEllipse(-66, 104, 26, 84);
+    g.lineStyle(2, skinShade, 1);
+    g.lineBetween(-22, 50, -6, 56); g.lineBetween(22, 50, 6, 56); // 鎖骨
+    // ワンピース水着（細い肩ひも + フリル + 胸元のリボン）
     g.fillStyle(suitColor, 1);
-    g.fillRect(-46, 40, 14, 30); g.fillRect(32, 40, 14, 30);
-    g.fillRoundedRect(-60, 62, 120, 100, 26); g.strokeRoundedRect(-60, 62, 120, 100, 26);
+    g.lineStyle(3, line, 1);
+    g.fillRect(-40, 44, 8, 28); g.fillRect(32, 44, 8, 28);
+    g.fillRoundedRect(-52, 66, 104, 96, 24); g.strokeRoundedRect(-52, 66, 104, 96, 24);
     g.fillStyle(0xffffff, 1);
-    for (let k = 0; k < 7; k += 1) g.fillCircle(-54 + k * 18, 64, 10);
-    g.fillStyle(suitColor, 1);
-    g.fillCircle(0, 86, 9); // 胸元のリボン
-    g.fillTriangle(0, 86, -18, 76, -18, 96); g.fillTriangle(0, 86, 18, 76, 18, 96);
-    g.fillStyle(0xffffff, 0.9); g.fillCircle(0, 86, 4);
+    for (let k = 0; k < 7; k += 1) g.fillCircle(-46 + k * 15.3, 68, 8.5);
+    g.fillStyle(0xff4f8b, 1);
+    g.fillTriangle(0, 88, -16, 78, -16, 98); g.fillTriangle(0, 88, 16, 78, 16, 98);
+    g.fillCircle(0, 88, 6);
+    g.fillStyle(0xffffff, 0.9); g.fillCircle(-2, 86, 2.5);
     // 浮き輪（赤白しま）
     g.lineStyle(26, 0xffffff, 1);
     g.strokeEllipse(0, 150, 190, 60);
@@ -1460,54 +1581,122 @@ export class MainScene extends Phaser.Scene {
       }
       g.strokePath();
     }
-    // 顔
-    g.lineStyle(4, line, 1);
-    g.fillStyle(skin, 1);
-    g.fillCircle(0, -40, 64); g.strokeCircle(0, -40, 64);
-    // 前髪
+    g.lineStyle(4, 0xffffff, 0.7);
+    g.beginPath(); g.arc(0, 150, 80, Math.PI * 1.15, Math.PI * 1.45); g.strokePath();
+
+    // 顔（ほおはふっくら、あごは小さくとがったアニメ顔）
+    const face = [];
+    for (let k = 0; k <= 16; k += 1) {
+      const a = Math.PI + (Math.PI * k) / 16;
+      face.push({ x: Math.cos(a) * 60, y: -46 + Math.sin(a) * 60 });
+    }
+    face.push(...bez([60, -46], [60, -6], [26, 12], 8).slice(1));
+    face.push(...bez([26, 12], [8, 24], [0, 26], 4).slice(1));
+    face.push(...bez([0, 26], [-8, 24], [-26, 12], 4).slice(1));
+    face.push(...bez([-26, 12], [-60, -6], [-60, -46], 8).slice(1));
+    shape(face, skin, line, 4);
+
+    // ほっぺ（ピンクのぼかし + 斜線）
+    g.fillStyle(0xff8fb1, 0.35);
+    g.fillEllipse(-36, -4, 30, 14); g.fillEllipse(36, -4, 30, 14);
+    g.lineStyle(2, 0xff6f9c, 0.8);
+    [-1, 1].forEach((s) => {
+      for (let k = 0; k < 3; k += 1) {
+        const bx = s * 36 + (k - 1) * 7;
+        g.lineBetween(bx - 2, -1, bx + 3, -8);
+      }
+    });
+
+    // 左目：大きなキラキラ瞳
+    const ex = -25;
+    const ey = -24;
+    g.fillStyle(0xffffff, 1);
+    g.fillEllipse(ex, ey + 2, 34, 38);
+    g.fillStyle(0x3b1f6e, 1); g.fillEllipse(ex + 2, ey + 3, 26, 36); // 瞳のふち（濃い紫）
+    g.fillStyle(0x7a45d8, 1); g.fillEllipse(ex + 2, ey + 5, 21, 30);
+    g.fillStyle(0xb48cff, 1); g.fillEllipse(ex + 2, ey + 11, 17, 16); // 下側を明るく
+    g.fillStyle(0xe2d2ff, 1); g.fillEllipse(ex + 2, ey + 15, 11, 7);
+    g.fillStyle(0x24103f, 1); g.fillEllipse(ex + 2, ey + 1, 10, 14); // ひとみ
+    g.fillStyle(0xffffff, 1);
+    g.fillEllipse(ex - 4, ey - 6, 11, 13); // 大きなハイライト
+    g.fillCircle(ex + 7, ey + 12, 3); // 小さなハイライト
+    g.fillCircle(ex - 3, ey + 14, 1.6);
+    g.fillTriangle(ex + 8, ey - 5, ex + 10, ey - 9, ex + 12, ey - 5); // きらっ
+    g.fillTriangle(ex + 8, ey - 5, ex + 10, ey - 1, ex + 12, ey - 5);
+    // 上まつげ（太いアイライン + はね上がり）
+    const lash = bez([ex - 19, ey - 4], [ex - 2, ey - 26], [ex + 19, ey - 10], 10);
+    g.lineStyle(6, line, 1); g.strokePoints(lash, false);
+    g.fillStyle(line, 1);
+    g.fillTriangle(ex - 19, ey - 4, ex - 27, ey - 6, ex - 16, ey - 12);
+    g.fillTriangle(ex - 15, ey - 11, ex - 24, ey - 16, ex - 10, ey - 15);
+    g.fillTriangle(ex + 19, ey - 10, ex + 24, ey - 6, ex + 15, ey - 13);
+    g.lineStyle(2, line, 1);
+    g.strokePoints(bez([ex - 10, ey + 20], [ex + 2, ey + 25], [ex + 13, ey + 19], 6), false); // 下まつげ
+    g.lineStyle(2.5, hairDark, 1);
+    g.strokePoints(bez([ex - 16, ey - 34], [ex - 2, ey - 41], [ex + 13, ey - 35], 6), false); // まゆ
+
+    // 右目：ウインク（にっこり閉じた目 + まつげ）
+    const wx = 25;
+    const wy = -20;
+    g.lineStyle(5, line, 1);
+    g.strokePoints(bez([wx - 17, wy - 2], [wx, wy - 16], [wx + 17, wy - 2], 10), false);
+    g.lineStyle(3, line, 1);
+    g.lineBetween(wx + 15, wy - 4, wx + 23, wy - 9);
+    g.lineBetween(wx + 10, wy - 9, wx + 15, wy - 15);
+    g.lineStyle(2.5, hairDark, 1);
+    g.strokePoints(bez([wx - 13, wy - 38], [wx + 2, wy - 44], [wx + 16, wy - 37], 6), false);
+
+    // 小さな鼻と、あーんと開いた小さな口
+    g.lineStyle(2, 0xd99a8c, 1);
+    g.lineBetween(1, -6, -1, -2);
+    const mouth = [...bez([-9, 6], [0, 9], [9, 6], 6), ...bez([9, 6], [0, 22], [-9, 6], 8).slice(1)];
+    shape(mouth, 0xc2405f, line, 2.5);
+    g.fillStyle(0xff8fa8, 1); g.fillEllipse(0, 13, 9, 5); // 舌
+
+    // 前髪（とがった毛束を重ねる）+ 顔のよこの触覚
     g.fillStyle(hair, 1);
-    g.fillEllipse(0, -92, 140, 52);
-    g.fillTriangle(-62, -90, -30, -86, -56, -40);
-    g.fillTriangle(-34, -92, 2, -88, -16, -54);
-    g.fillTriangle(-4, -92, 34, -90, 14, -56);
-    g.fillTriangle(26, -90, 64, -88, 56, -42);
-    g.fillStyle(hairDark, 1);
-    g.fillEllipse(-20, -106, 40, 10);
+    g.fillEllipse(0, -96, 128, 46);
+    lock(-48, -96, -66, -50, -58, 4, 12); // 顔まわりの長い毛
+    lock(48, -96, 66, -50, 58, 4, 12);
+    lock(-40, -104, -52, -76, -46, -44, 14);
+    lock(-18, -110, -26, -80, -30, -50, 14);
+    lock(4, -112, 0, -84, -6, -54, 13);
+    lock(22, -110, 26, -82, 18, -50, 14);
+    lock(44, -104, 52, -78, 44, -46, 14);
+    // ふちどりの外側の髪の線（頭の丸み）
+    g.lineStyle(4, line, 1);
+    g.beginPath(); g.arc(0, -62, 80, Math.PI * 1.08, Math.PI * 1.92); g.strokePath();
+    // 天使の輪（つやのハイライト）
+    g.lineStyle(6, hairLight, 0.95);
+    g.beginPath(); g.arc(0, -62, 66, Math.PI * 1.2, Math.PI * 1.38); g.strokePath();
+    g.beginPath(); g.arc(0, -62, 66, Math.PI * 1.55, Math.PI * 1.78); g.strokePath();
+    // アホ毛
+    g.lineStyle(4, line, 1);
+    const ahoge = bez([4, -140], [30, -170], [10, -184], 8);
+    g.strokePoints(ahoge, false);
+    g.lineStyle(2, hair, 1);
+    g.strokePoints(ahoge, false);
+
     // ひまわりの髪かざり
     g.fillStyle(0xffcc00, 1);
+    g.lineStyle(2, line, 1);
     for (let k = 0; k < 8; k += 1) {
       const a = (Math.PI * 2 * k) / 8;
-      g.fillCircle(50 + Math.cos(a) * 11, -96 + Math.sin(a) * 11, 7);
+      g.fillCircle(58 + Math.cos(a) * 10, -104 + Math.sin(a) * 10, 6.5);
     }
-    g.fillStyle(0xab5236, 1); g.fillCircle(50, -96, 8);
-    // 目（左はキラキラ、右はウインク）
-    g.fillStyle(line, 1);
-    g.fillEllipse(-24, -30, 26, 34);
-    g.fillStyle(0x7e2553, 1); g.fillEllipse(-24, -24, 18, 20);
-    g.fillStyle(0xffffff, 1);
-    g.fillCircle(-29, -38, 6); g.fillCircle(-19, -21, 3);
-    g.lineStyle(5, line, 1);
-    g.beginPath(); g.moveTo(14, -30); g.lineTo(26, -36); g.lineTo(38, -30); g.strokePath();
-    g.lineStyle(3, line, 1);
-    g.lineBetween(-38, -46, -42, -52); g.lineBetween(-30, -50, -32, -56); // まつげ
-    // ほっぺ
-    g.fillStyle(0xff77a8, 0.55);
-    g.fillEllipse(-38, -8, 22, 12); g.fillEllipse(38, -8, 22, 12);
-    // にっこり口
-    g.fillStyle(0xd94a6a, 1);
-    g.beginPath(); g.moveTo(-10, 0); g.lineTo(10, 0); g.lineTo(0, 12); g.closePath(); g.fillPath();
-    g.lineStyle(3, line, 1);
-    g.beginPath(); g.moveTo(-10, 0); g.lineTo(10, 0); g.lineTo(0, 12); g.closePath(); g.strokePath();
-    // ピースサイン
+    g.fillStyle(0xab5236, 1); g.fillCircle(58, -104, 7); g.strokeCircle(58, -104, 7);
+
+    // ピースサイン（ほっそりした指）
     g.fillStyle(skin, 1);
     g.lineStyle(3, line, 1);
-    g.fillRoundedRect(72, -64, 13, 40, 6); g.strokeRoundedRect(72, -64, 13, 40, 6);
-    g.fillRoundedRect(88, -60, 13, 38, 6); g.strokeRoundedRect(88, -60, 13, 38, 6);
-    g.fillCircle(84, -18, 18); g.strokeCircle(84, -18, 18);
-    g.fillEllipse(96, 14, 30, 52); g.strokeEllipse(96, 14, 30, 52);
+    g.fillRoundedRect(74, -66, 11, 40, 5); g.strokeRoundedRect(74, -66, 11, 40, 5);
+    g.fillRoundedRect(89, -62, 11, 38, 5); g.strokeRoundedRect(89, -62, 11, 38, 5);
+    g.fillCircle(86, -18, 16); g.strokeCircle(86, -18, 16);
+    g.fillEllipse(94, 14, 24, 50); g.strokeEllipse(94, 14, 24, 50);
+
     // キラキラ
     g.fillStyle(0xffffff, 1);
-    [[-118, -140, 10], [120, -120, 8], [-110, 70, 7]].forEach(([sx, sy, r]) => {
+    [[-118, -140, 10], [124, -118, 8], [-112, 72, 7], [118, 60, 5]].forEach(([sx, sy, r]) => {
       g.fillTriangle(sx - r, sy, sx + r, sy, sx, sy - r * 2.2);
       g.fillTriangle(sx - r, sy, sx + r, sy, sx, sy + r * 2.2);
       g.fillTriangle(sx, sy - r, sx, sy + r, sx - r * 2.2, sy);
