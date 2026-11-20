@@ -110,7 +110,8 @@ Discord で集まった友達の指示を少しずつ反映して育てていく
 
 - Z キーで発射。押しっぱなしで 150 ミリ秒ごとに連射
 - 最後に動いた向き（初期は右）へ 700 px/秒で直進し、画面外に出ると消える
-- 見た目: 長さ 28 × 太さ 6 の白い芯 + プレイヤーの今の色の光。発射時にキャラが少し縮む
+- 見た目: pixelfx のドット絵のレーザー弾（`projectiles/laser-bolt`。白く光る頭 + 尾がちらちらほどける）をプレイヤーの今の色で。当たり判定の大きさ（長さ 28 px）は従来どおり。発射時にキャラが少し縮む
+- 敵に当たると、当たったところにドット絵の火花（`impacts/hit-spark`、プレイヤーの色）が散る
 
 ## スキル「にゃんこ流星群」（オリジナルスキル）
 
@@ -129,7 +130,7 @@ Discord で集まった友達の指示を少しずつ反映して育てていく
 - 満タンのときに 1P は X キー、2P は P キー、スマホは「必殺」ボタンで発動（ゲージは 0 に戻る）。満タンでないときは何も起きない
 - 必殺技「ねこみみ 乱れ斬り！！」:
   1. **カットイン演出**（約 1.3 秒）: 画面が暗くなり、プレイヤーの色の斜めの帯がスピード線とともに右から飛び込む。**アニメ調の美少女**（パステルピンクの長いツインテール・天使の輪のつや・アホ毛・とがった前髪、むらさきの大きなキラキラ瞳（ハイライト入り）・太いまつげ・とがった小さなあご・斜線入りのほっぺ・小さく開いた口、ねこみみカチューシャ・リボンの髪ゴム・ひまわりの髪かざり・フリル付きワンピース水着（プレイヤーの色）・赤白の浮き輪・ウインクでピース。オリジナルデザインでコードで描画）と「必殺！」「ねこみみ 乱れ斬り！！」（2 人のときは「1P の必殺技」も）が出て、画面が少しゆれる。終わると帯ごと左へ抜けていく。この間、敵は止まり、新しい敵は出てこない（プレイヤーは動ける）
-  2. 画面が白く光ってゆれ、**斬撃**（白い三日月形の光 + プレイヤーの色のふち）が画面を 6 回斬り裂き、最後に大きな X 字の斬撃。画面上の敵は 1 体ずつ斬られて、まっぷたつに割れてはじける（「たおした敵」に加算・アイテムも通常どおりドロップ）
+  2. 画面が白く光ってゆれ、**斬撃**（pixelfx の `melee/sword-slash` の大きな三日月形の斬撃。プレイヤーの色で火花を散らす）が画面を 6 回斬り裂き、最後に大きな X 字の斬撃（sword-slash 2 本 + 画面中央に `melee/double-slash`）。画面上の敵は 1 体ずつ斬られて、まっぷたつに割れてはじける（「たおした敵」に加算・アイテムも通常どおりドロップ）
 - 必殺技でたおした敵はゲージにたまらない。カットイン中にもう一度押しても発動しない
 
 ## アイテム（ビーム変化・磁石）
@@ -146,22 +147,22 @@ Discord で集まった友達の指示を少しずつ反映して育てていく
 | 散 | 散弾 | 1 回の発射で 3 本（各方向を ±16° に広げる） |
 | 追 | ホーミング弾 | 520 px/秒で、いちばん近い敵へ 6 ラジアン/秒で曲がる |
 | 連 | 連射 | 連射間隔 150 → 70 ミリ秒 |
-| 巨 | 巨大弾 | ビームの大きさ・当たり判定が 2 倍 |
+| 巨 | 巨大弾 | ビームの大きさ・当たり判定が 2 倍（見た目は pixelfx のプラズマ弾 `projectiles/plasma-shot`） |
 | 貫 | 貫通弾 | 敵を倒してもビームが消えない |
 | 後 | うしろ撃ち | 後ろにも発射 |
 | 全 | 全方位 | 8 方向に発射（うしろ撃ち・よこ撃ちより優先） |
 | 波 | ウェーブ弾 | 左右に ±16 px くねくね揺れながら進む |
 | 跳 | はね返り弾 | 画面の端で最大 3 回はね返る |
 | 速 | 高速弾 | 弾の速さ 1.8 倍 |
-| 爆 | 爆発弾 | 当たると半径 70 px の爆発。範囲の敵もまとめて倒す |
+| 爆 | 爆発弾 | 当たると半径 70 px の爆発（pixelfx の `explosions/plasma-explosion` を炎の色で）。範囲の敵もまとめて倒す |
 | 裂 | 分裂弾 | 当たるとその場から小さい弾 3 本（±35°）に分裂（分裂した弾はもう分裂しない） |
 | 横 | よこ撃ち | 左右（±90°）にも発射 |
 | 双 | ツイン | 各方向に 2 本並べて発射 |
-| 雷 | いなずま | 当たると 170 px 以内の敵へ稲妻が 2 回連鎖して倒す |
-| 氷 | こおり弾 | 当たると半径 100 px の敵を 3 秒凍らせる（動かなくなる） |
-| 虹 | にじ色弾 | ビームの光が虹色に変わり、当たり判定 1.25 倍 |
+| 雷 | いなずま | 当たると 170 px 以内の敵へ稲妻が 2 回連鎖して倒す（稲妻は pixelfx の `lightning/zap-hit`。前の敵の方向から飛んでくる） |
+| 氷 | こおり弾 | 当たると半径 100 px の敵を 3 秒凍らせる（動かなくなる）。雪の結晶がはじける（pixelfx の `ice/snowflake-burst`） |
+| 虹 | にじ色弾 | ビームの色が虹色に変わり続け、当たり判定 1.25 倍 |
 | 戻 | ブーメラン | 0.42 秒後に撃ったプレイヤーのところへ戻ってくる（戻ると消える） |
-| 衛 | えいせい | プレイヤーのまわりを玉が 2 つ回り、触れた敵を倒す |
+| 衛 | えいせい | プレイヤーのまわりを玉が 2 つ回り、触れた敵を倒す（玉は pixelfx の `projectiles/plasma-shot`。回る向きに尾を引く） |
 | 長 | ロングレーザー | ビームの長さ 3 倍（当たり判定も長い） |
 | 磁 | 磁石 | 落ちている他のアイテムが、磁石を持つプレイヤー（2 人とも持っていれば近いほう）へ 320 px/秒で吸い寄せられる（ビームは変わらない） |
 
@@ -238,20 +239,28 @@ Discord で集まった友達の指示を少しずつ反映して育てていく
 | `pickups/collect-burst` | 色チェンジ（1P・2P・スマホの「色」ボタン） | 新しいプレイヤーの色 |
 | `arcane/mana-burst` | スキル「にゃんこ流星群」の発動（自機の位置） | プレイヤーの色 |
 | `arcane/star-fall` | スキル「にゃんこ流星群」の流れ星（ねらった敵の位置。毎回 seed を変える） | プレイヤーの色 |
+| `projectiles/laser-bolt` | ビーム（ループ。弾と一緒に動く・向きも回る。分裂弾の小さい弾も） | プレイヤーの色（にじ色弾は虹色に変わり続ける） |
+| `projectiles/plasma-shot` | 巨大弾のビーム / えいせいの玉（ループ。弾と一緒に動く） | プレイヤーの色 / えいせいの色 |
+| `impacts/hit-spark` | ビームが敵に当たったところ | プレイヤーの色 |
+| `explosions/plasma-explosion` | 爆発弾の爆発 | 炎の色 |
+| `lightning/zap-hit` | いなずまの連鎖（敵ごと） | 黄色い電気（標準） |
+| `ice/snowflake-burst` | こおり弾 | 氷の色（標準） |
+| `melee/sword-slash` | 必殺技の斬撃（画面を斬り裂く大きい斬撃 / 敵 1 体ずつの小さい斬撃。`radius` で大きさを変える） | プレイヤーの色 |
+| `melee/double-slash` | 必殺技のしめの X 字（画面中央） | プレイヤーの色 |
 
 ## 実装メモ
 
-- pixelfx: `src/fx/PixelFxLayer.js`（`MainScene` の `this.pfx`）。`this.pfx.play(エフェクト, x, y, オプション)` で再生（x, y はエフェクトの原点＝多くは足元、ゲーム座標）。`rampFrom(色)` でプレイヤーの色からパレットを作れる。import は `pixelfx/fx/<カテゴリ>/<名前>`（`vite.config.js` のエイリアス）
+- pixelfx: `src/fx/PixelFxLayer.js`（`MainScene` の `this.pfx`）。`this.pfx.play(エフェクト, x, y, オプション)` で再生（x, y はエフェクトの原点＝多くは足元、ゲーム座標）。返り値の `move(x, y, 向き)` で動かす・`set({ palette })` で色を変える・`remove()` ですぐ消す（弾はこれで動かしている）。`rampFrom(色)` でプレイヤーの色からパレットを作れる。import は `pixelfx/fx/<カテゴリ>/<名前>`（`vite.config.js` のエイリアス）
 
 - Phaser 3 の Arcade Physics を使用
 - シーン: `TitleScene`（`src/scenes/TitleScene.js`、最初に表示）→ `MainScene`（`src/scenes/MainScene.js`）
 - カウントダウンは `startCountdown`（`this.countdownActive` の間は移動・ビーム・必殺技・敵の出現を止める）。のこり時間は `this.timeLeft`（`update` で減らす。カットイン中は止める）、表示は `createTimerUI` / `updateTimerUI`、スコアは `totalScore`。時間切れは `triggerGameOver(true)`（TIME UP 表示）
 - プレイヤーは `this.players` 配列で管理（`createPlayer` / `joinP2`）。敵は `this.enemies`、ビームは `this.beams`、アイテムは `this.items`
 - アイテム効果はプレイヤーの `powers`（`{ 種類: 切れる時刻 }`。テストで付けたものは `Infinity`）。種類の定義は `ITEM_TYPES`
-- ビームは `fireBeam`（向き・本数を決める）→ `beamOptions`（性質の組み合わせ）→ `createBeam`。毎フレーム `updateBeam`、命中時は `beamHit`（`explodeAt` / `chainFrom` / `freezeAround` / 分裂）
+- ビームは `fireBeam`（向き・本数を決める）→ `beamOptions`（性質の組み合わせ）→ `createBeam`（中身のない container が位置と当たり判定、見た目は `beam.fx`＝pixelfx。消すときは `killBeam`）。毎フレーム `updateBeam`、命中時は `beamHit`（`explodeAt` / `chainFrom` / `freezeAround` / 分裂）
 - 回復アイテムは `spawnItem(x, y, 'heal', 回復量)`（`item.type === 'heal'`、回復量は `rollHealAmount`・`HEAL_WEIGHTS`）→ 拾うと `healPlayer`。`ITEM_TYPES` には入れていない
 - 磁石の吸い寄せは `updateItems` 内。痛そうな顔は `updateCuteCharacter` → `setHurtFace`（`cute.hurtFace`）
-- 必殺技: ゲージはプレイヤーの `special`（`addSpecial` で加算、`updateSpecialUI` で表示）。発動は `trySpecial` → `playCutin`（カットインの部品は `createSpecialUI` で 1 回だけ作って使い回す）→ `specialBlast`（斬撃は `slashLine`、敵がまっぷたつになる演出は `splitEnemy`）。カットインの女の子は `drawSwimsuitGirl`（Graphics で毎回プレイヤーの色で描き直す。毛束は 2 次ベジェの `lock`）。演出中は `this.cutinActive` で敵の移動・出現を止める
+- 必殺技: ゲージはプレイヤーの `special`（`addSpecial` で加算、`updateSpecialUI` で表示）。発動は `trySpecial` → `playCutin`（カットインの部品は `createSpecialUI` で 1 回だけ作って使い回す）→ `specialBlast`（斬撃は `slashLine`＝pixelfx の sword-slash。弧の中心が指定位置に来るよう原点をずらす、敵がまっぷたつになる演出は `splitEnemy`）。カットインの女の子は `drawSwimsuitGirl`（Graphics で毎回プレイヤーの色で描き直す。毛束は 2 次ベジェの `lock`）。演出中は `this.cutinActive` で敵の移動・出現を止める
 - 体力: プレイヤーの `hp` / `invincibleUntil` / `down`。接触判定は `updateCuteCharacter` 内で行い `damagePlayer` を呼ぶ。表示は `createHpUI` / `updateHpUI`（ハートは生成テクスチャ `heart`）。ゲームオーバーは `triggerGameOver`（`this.gameOver` で更新を止め、物理を pause。リトライは `scene.restart()`。`create` で物理を resume し、`game.events` の BLUR リスナーは SHUTDOWN 時に外す）
 - えいせいは `updateSatellites`、テストパネルは `createTestUI` / `toggleTestPower` / `refreshTestPanel`
 - 背景・マップは `src/scenes/world.js`（エリア定義 `AREAS`・`ensureAreaTexture` でエリアごとの Canvas テクスチャ `area-<x>-<y>` を描く）。`MainScene` の `createBackground`（背景画像 `this.bgImage` + ちょうちょ）/ `createMinimap` / `checkAreaExit`（プレイヤーの `moveX`・`moveY` で端を押しているか判定）→ `changeArea`（暗転・`clearField`・テクスチャ差し替え・`this.areaSerial` を +1）

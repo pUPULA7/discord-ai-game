@@ -10,6 +10,7 @@ import { createFrame, clearFrame, createFx, composite } from 'pixelfx';
 // - エフェクトは 1/SCALE の解像度（ドット絵）で描き、SCALE 倍に拡大して表示する
 // - x, y はエフェクトの「原点」（多くは足元・地面）。ゲーム座標（800 × 600）で渡す
 // - 再生が終わった one-shot は自動で消える。ループするエフェクトは返り値の stop() で止める
+// - 返り値の move(x, y, angle) で再生中のエフェクトを動かせる（弾など）。set({ palette }) で色も変えられる
 // - 毎フレームの更新はシーンの update イベントで自動。シーン終了時に片付ける
 export const PIXEL_SCALE = 2;
 
@@ -42,7 +43,21 @@ export class PixelFxLayer {
     const fx = createFx(mod, { ...opts, x: Math.round(x / this.scale), y: Math.round(y / this.scale) });
     const entry = { fx, behind: !!opts.behind };
     this.effects.push(entry);
-    return { stop: () => fx.stop(), get done() { return fx.done(); } };
+    const scale = this.scale;
+    return {
+      stop: () => fx.stop(),
+      // フェードせずにすぐ消す
+      remove: () => { this.effects = this.effects.filter((e) => e !== entry); this.dirty = true; },
+      get done() { return fx.done(); },
+      // 弾のように動くエフェクト用：原点（ゲーム座標）と向き（ラジアン）を動かす
+      move(nx, ny, angle = fx.options.angle) {
+        fx.options.x = Math.round(nx / scale);
+        fx.options.y = Math.round(ny / scale);
+        fx.options.angle = angle;
+      },
+      // 再生中にオプション（palette など）を変える
+      set(o) { Object.assign(fx.options, o); },
+    };
   }
 
   update(dt) {

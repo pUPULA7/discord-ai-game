@@ -3,6 +3,14 @@ import { PixelFxLayer, PIXEL_SCALE, rampFrom } from '../fx/PixelFxLayer.js';
 import * as collectBurst from 'pixelfx/fx/pickups/collect-burst';
 import * as manaBurst from 'pixelfx/fx/arcane/mana-burst';
 import * as starFall from 'pixelfx/fx/arcane/star-fall';
+import * as laserBolt from 'pixelfx/fx/projectiles/laser-bolt';
+import * as plasmaShot from 'pixelfx/fx/projectiles/plasma-shot';
+import * as hitSpark from 'pixelfx/fx/impacts/hit-spark';
+import * as plasmaExplosion from 'pixelfx/fx/explosions/plasma-explosion';
+import * as zapHit from 'pixelfx/fx/lightning/zap-hit';
+import * as snowflakeBurst from 'pixelfx/fx/ice/snowflake-burst';
+import * as swordSlash from 'pixelfx/fx/melee/sword-slash';
+import * as doubleSlash from 'pixelfx/fx/melee/double-slash';
 import {
   START_AREA, WORLD_COLS, WORLD_ROWS, areaAt, ensureAreaTexture,
 } from './world.js';
@@ -28,7 +36,6 @@ const BEAM_BUTTON = { x: 710, y: 540 };
 // ビーム
 const BEAM_SPEED = 700; // px/秒
 const BEAM_LENGTH = 28;
-const BEAM_WIDTH = 6;
 const BEAM_INTERVAL = 150; // 押しっぱなしのときの連射間隔（ミリ秒）
 
 // ゲーム時間・スコア
@@ -101,6 +108,10 @@ const ORBIT_SPEED = 0.006; // ラジアン/ミリ秒
 const ORBIT_SIZE = 8;
 const MAGNET_SPEED = 320; // 磁石で吸い寄せられるアイテムの速さ（px/秒）
 const HURT_DISTANCE = ENEMY_RADIUS + 18; // 敵とこれより近いと「触れている」（痛そうな顔になる）
+// にじ色弾の色（pixelfx のパレット。色相を 12 段階で回す）
+const RAINBOW_STEPS = 12;
+const EXPLODE_PALETTE = ['#1f0b10', '#4a1118', '#8c1d1c', '#cc3a1a', '#f2701f', '#ffae35', '#ffe27a', '#fff8d6'];
+const EXPLODE_ACCENT = ['#2a0a0a', '#7a1a10', '#e0561e', '#ffc46a', '#fff3d0'];
 const MAX_BEAMS = 300; // 重ねがけで弾が増えすぎないための上限
 const TEST_ENEMY_MAX = 30; // テストパネルの「敵+5」で出せる上限
 
@@ -709,16 +720,19 @@ export class MainScene extends Phaser.Scene {
     const startX = x ?? player.rect.x + cos * 22 - sin * offset;
     const startY = y ?? player.rect.y + sin * 22 + cos * offset;
     const len = opts.length;
-    // 外側のぼんやり光 + 白い芯 + 効果ごとの先端の玉
-    const glow = this.add.rectangle(0, 0, len + 8, BEAM_WIDTH + 8, color, 0.35);
-    const parts = [glow, this.add.rectangle(0, 0, len, BEAM_WIDTH, 0xffffff)];
-    const tips = ['homing', 'explode', 'freeze', 'chain', 'split'].filter((t) => opts[t]);
-    tips.forEach((t, i) => {
-      parts.push(this.add.circle(len / 2 - i * 7, 0, i === 0 ? 5 : 3.5, ITEM_TYPES[t].color));
-    });
-    const beam = this.add.container(startX, startY, parts)
-      .setRotation(angle).setScale(opts.scale).setDepth(9);
-    beam.glow = glow;
+    // 見た目は pixelfx の弾（ふつう: laser-bolt / 巨大弾: plasma-shot）。container は位置と当たり判定用
+    const beam = this.add.container(startX, startY).setRotation(angle).setScale(opts.scale);
+    beam.palette = rampFrom(color);
+    beam.headOffset = (opts.length * opts.scale) / 2;
+    beam.fx = opts.scale > 1.5
+      ? this.pfx.play(plasmaShot, startX, startY, {
+        palette: beam.palette, size: Math.round(4 * opts.scale), angle, seed: Phaser.Math.Between(1, 99999),
+      })
+      : this.pfx.play(laserBolt, startX, startY, {
+        palette: beam.palette, length: Math.max(6, Math.round((opts.length * opts.scale) / PIXEL_SCALE)),
+        angle, seed: Phaser.Math.Between(1, 99999),
+      });
+    beam.fx.move(startX + cos * beam.headOffset, startY + sin * beam.headOffset, angle);
     beam.opts = opts;
     beam.bx = startX; // ウェーブの揺れを除いた本来の位置
     beam.by = startY;
@@ -730,6 +744,21 @@ export class MainScene extends Phaser.Scene {
     beam.owner = player;
     this.beams.push(beam);
     return beam;
+  }
+
+  // ビームを消す（pixelfx の弾も一緒に消す）
+  killBeam(beam) {
+    beam.fx.remove();
+    beam.destroy();
+  }
+
+  // にじ色弾のパレット（色相ごとに 1 回だけ作る）
+  rainbowPalette(step) {
+    if (!this.rainbowPalettes) {
+      this.rainbowPalettes = Array.from({ length: RAINBOW_STEPS },
+        (_, i) => rampFrom(Phaser.Display.Color.HSVToRGB(i / RAINBOW_STEPS, 1, 1).color));
+    }
+    return this.rainbowPalettes[step % RAINBOW_STEPS];
   }
 
   // ビームの向きを target のほうへ少しずつ曲げる
@@ -784,7 +813,7 @@ export class MainScene extends Phaser.Scene {
       const owner = beam.owner;
       this.turnBeamToward(beam, owner.rect.x, owner.rect.y, BOOMERANG_TURN_RATE, delta);
       if (Phaser.Math.Distance.Between(beam.bx, beam.by, owner.rect.x, owner.rect.y) < 24) {
-        beam.destroy();
+        this.killBeam(beam);
         return false;
       }
     } else if (o.homing) {
@@ -807,16 +836,17 @@ export class MainScene extends Phaser.Scene {
     }
     beam.setPosition(x, y);
     beam.rotation = ang;
+    beam.fx.move(x + Math.cos(ang) * beam.headOffset, y + Math.sin(ang) * beam.headOffset, ang);
     if (o.rainbow) {
       const hue = (time * 0.001 + beam.age * 0.002) % 1;
-      beam.glow.setFillStyle(Phaser.Display.Color.HSVToRGB(hue, 1, 1).color, 0.6);
+      beam.fx.set({ palette: this.rainbowPalette(Math.floor(hue * RAINBOW_STEPS)) });
     }
 
     const margin = o.length * o.scale + 10;
     const out = beam.bx < -margin || beam.bx > width + margin || beam.by < -margin || beam.by > height + margin;
     // ブーメランは画面外に出ても戻ってくる（念のため 4 秒で消える）
     if ((out && !o.boomerang) || (o.boomerang && beam.age > 4000)) {
-      beam.destroy();
+      this.killBeam(beam);
       return false;
     }
     // 当たり判定：ビームの線分と敵の中心の距離（ふつうのビームは今までどおり半径 敵 + 14 の円）
@@ -832,7 +862,7 @@ export class MainScene extends Phaser.Scene {
     if (hit) {
       this.beamHit(beam, hit, x, y, ang);
       if (!o.pierce) {
-        beam.destroy();
+        this.killBeam(beam);
         return false;
       }
     }
@@ -845,6 +875,8 @@ export class MainScene extends Phaser.Scene {
     const owner = beam.owner;
     const ex = enemy.x;
     const ey = enemy.y;
+    // 当たったところにドット絵の火花（hit-spark。原点は足元なので少し下にずらす）
+    this.pfx.play(hitSpark, ex, ey + 40, { palette: beam.palette, flip: Math.cos(ang) < 0, seed: Phaser.Math.Between(1, 99999) });
     this.defeatEnemy(enemy, owner);
     if (o.explode) this.explodeAt(ex, ey, owner);
     if (o.chain) this.chainFrom(ex, ey, owner);
@@ -857,10 +889,8 @@ export class MainScene extends Phaser.Scene {
 
   // 爆発弾：まわりの敵もまとめて倒す
   explodeAt(x, y, owner) {
-    const boom = this.add.circle(x, y, EXPLODE_RADIUS, ITEM_TYPES.explode.color, 0.45).setDepth(9);
-    boom.setStrokeStyle(3, 0xffe27a);
-    this.tweens.add({
-      targets: boom, scale: { from: 0.3, to: 1 }, alpha: 0, duration: 320, onComplete: () => boom.destroy(),
+    this.pfx.play(plasmaExplosion, x, y, {
+      palette: EXPLODE_PALETTE, accent: EXPLODE_ACCENT, seed: Phaser.Math.Between(1, 99999),
     });
     this.enemies.filter((e) => !e.dead && Phaser.Math.Distance.Between(x, y, e.x, e.y) < EXPLODE_RADIUS + ENEMY_RADIUS)
       .forEach((e) => this.defeatEnemy(e, owner));
@@ -879,19 +909,10 @@ export class MainScene extends Phaser.Scene {
         if (d < best) { best = d; target = e; }
       });
       if (!target) return;
-      // ギザギザの稲妻
-      const g = this.add.graphics().setDepth(9);
-      g.lineStyle(3, ITEM_TYPES.chain.color, 1);
-      g.beginPath();
-      g.moveTo(fx, fy);
-      const steps = 5;
-      for (let s = 1; s < steps; s += 1) {
-        const t = s / steps;
-        g.lineTo(fx + (target.x - fx) * t + Phaser.Math.Between(-8, 8), fy + (target.y - fy) * t + Phaser.Math.Between(-8, 8));
-      }
-      g.lineTo(target.x, target.y);
-      g.strokePath();
-      this.tweens.add({ targets: g, alpha: 0, duration: 250, onComplete: () => g.destroy() });
+      // 稲妻が前の敵から飛んでくる（zap-hit。左から来る向きなので、飛んできた方向に回す）
+      this.pfx.play(zapHit, target.x, target.y, {
+        angle: Math.atan2(target.y - fy, target.x - fx), seed: Phaser.Math.Between(1, 99999),
+      });
       fx = target.x;
       fy = target.y;
       this.defeatEnemy(target, owner);
@@ -900,10 +921,8 @@ export class MainScene extends Phaser.Scene {
 
   // こおり弾：まわりの敵をしばらく止める
   freezeAround(x, y) {
-    const ring = this.add.circle(x, y, FREEZE_RADIUS, ITEM_TYPES.freeze.color, 0.25).setDepth(9);
-    this.tweens.add({
-      targets: ring, scale: { from: 0.4, to: 1 }, alpha: 0, duration: 400, onComplete: () => ring.destroy(),
-    });
+    // 雪の結晶がはじける（snowflake-burst。原点は足元なので下にずらす）
+    this.pfx.play(snowflakeBurst, x, y + 60, { seed: Phaser.Math.Between(1, 99999) });
     const until = this.time.now + FREEZE_TIME;
     this.enemies.forEach((e) => {
       if (!e.dead && Phaser.Math.Distance.Between(x, y, e.x, e.y) < FREEZE_RADIUS + ENEMY_RADIUS) {
@@ -918,18 +937,23 @@ export class MainScene extends Phaser.Scene {
     this.players.forEach((p) => {
       const active = this.hasPower(p, 'orbit');
       if (!active) {
-        if (p.sats) { p.sats.forEach((s) => s.destroy()); p.sats = null; }
+        if (p.sats) { p.sats.forEach((s) => { s.fx.remove(); s.destroy(); }); p.sats = null; }
         return;
       }
       if (!p.sats) {
-        p.sats = Array.from({ length: ORBIT_COUNT }, () => this.add.container(p.rect.x, p.rect.y, [
-          this.add.circle(0, 0, ORBIT_SIZE + 5, ITEM_TYPES.orbit.color, 0.3),
-          this.add.circle(0, 0, ORBIT_SIZE, ITEM_TYPES.orbit.color).setStrokeStyle(2, 0xffffff),
-        ]).setDepth(9));
+        // 見た目は pixelfx の plasma-shot（光の玉が尾を引いて回る）
+        p.sats = Array.from({ length: ORBIT_COUNT }, () => {
+          const s = this.add.container(p.rect.x, p.rect.y);
+          s.fx = this.pfx.play(plasmaShot, p.rect.x, p.rect.y, {
+            palette: rampFrom(ITEM_TYPES.orbit.color), size: 4, seed: Phaser.Math.Between(1, 99999),
+          });
+          return s;
+        });
       }
       p.sats.forEach((s, i) => {
         const a = time * ORBIT_SPEED + (Math.PI * 2 * i) / ORBIT_COUNT;
         s.setPosition(p.rect.x + Math.cos(a) * ORBIT_RADIUS, p.rect.y + Math.sin(a) * ORBIT_RADIUS);
+        s.fx.move(s.x, s.y, a + Math.PI / 2); // 回る向きに尾を引く
         this.enemies.filter((e) => !e.dead && Phaser.Math.Distance.Between(s.x, s.y, e.x, e.y) < ENEMY_RADIUS + ORBIT_SIZE)
           .forEach((e) => this.defeatEnemy(e, p));
       });
@@ -1429,7 +1453,7 @@ export class MainScene extends Phaser.Scene {
   clearField() {
     this.enemies.forEach((e) => { e.dead = true; e.destroy(); });
     this.enemies = [];
-    this.beams.forEach((b) => b.destroy());
+    this.beams.forEach((b) => this.killBeam(b));
     this.beams = [];
     this.items.forEach((it) => it.destroy());
     this.items = [];
@@ -1928,38 +1952,20 @@ export class MainScene extends Phaser.Scene {
     });
   }
 
-  // 斬撃 1 本（細長い三日月形の光が一瞬で走り、すっと消える）
-  slashLine(x, y, angle, length, thick, color, delay = 0) {
-    const c = this.add.container(x, y).setDepth(25).setRotation(angle).setVisible(false);
-    const g = this.add.graphics();
-    const half = length / 2;
-    const lens = (w, col, alpha) => {
-      g.fillStyle(col, alpha);
-      g.beginPath();
-      g.moveTo(-half, 0);
-      for (let t = 0; t <= 12; t += 1) {
-        const px = -half + (length * t) / 12;
-        g.lineTo(px, -Math.sin((Math.PI * t) / 12) * w);
-      }
-      for (let t = 12; t >= 0; t -= 1) {
-        const px = -half + (length * t) / 12;
-        g.lineTo(px, Math.sin((Math.PI * t) / 12) * w * 0.35);
-      }
-      g.closePath();
-      g.fillPath();
-    };
-    lens(thick * 1.8, color, 0.55);
-    lens(thick, 0xffffff, 1);
-    c.add(g);
-    c.scaleX = 0;
-    this.time.delayedCall(delay, () => {
-      c.setVisible(true);
-      this.tweens.add({ targets: c, scaleX: 1, duration: 90, ease: 'Cubic.Out' });
-      this.tweens.add({
-        targets: c, scaleY: 0, alpha: 0, duration: 260, delay: 110, ease: 'Cubic.In',
-        onComplete: () => c.destroy(),
-      });
+  // 斬撃 1 本（pixelfx の sword-slash。三日月形の光が走り、火花を散らして消える）
+  // length: 斬撃の大きさ（px）。弧の中心が (x, y) に来るように原点をずらす
+  slashLine(x, y, angle, length, color, delay = 0) {
+    const radius = Phaser.Math.Clamp(Math.round(length / 4), 16, 150);
+    // sword-slash の弧の中心は原点から (6, -26) ドット。向きに合わせて回してから引く
+    const cx = 6 * PIXEL_SCALE;
+    const cy = -26 * PIXEL_SCALE;
+    const ox = x - (cx * Math.cos(angle) - cy * Math.sin(angle));
+    const oy = y - (cx * Math.sin(angle) + cy * Math.cos(angle));
+    const play = () => this.pfx.play(swordSlash, ox, oy, {
+      palette: rampFrom(color), radius, angle, seed: Phaser.Math.Between(1, 99999),
     });
+    if (delay > 0) this.time.delayedCall(delay, play);
+    else play();
   }
 
   // 必殺技の本体：画面を何度も斬り裂く斬撃で、画面上の敵を全部やっつける
@@ -1974,10 +1980,14 @@ export class MainScene extends Phaser.Scene {
       const angle = Phaser.Math.FloatBetween(-0.9, 0.9) + (k % 2 ? Math.PI / 2 : 0);
       this.slashLine(
         width / 2 + Phaser.Math.Between(-160, 160), height / 2 + Phaser.Math.Between(-120, 120),
-        angle, diag * 1.1, 16, color, k * 55,
+        angle, diag * 0.6, color, k * 55,
       );
     }
-    [0.6, -0.6].forEach((a, k) => this.slashLine(width / 2, height / 2, a, diag * 1.2, 18, color, 380 + k * 70));
+    // しめの X 字（double-slash。原点は足元なので、交差点が画面の中央に来るように下にずらす）
+    [0.6, -0.6].forEach((a, k) => this.slashLine(width / 2, height / 2, a, diag * 0.7, color, 380 + k * 70));
+    this.time.delayedCall(380, () => {
+      this.pfx.play(doubleSlash, width / 2 - 60, height / 2 + 100, { palette: rampFrom(color), seed: Phaser.Math.Between(1, 99999) });
+    });
     this.time.delayedCall(380, () => this.cameras.main.flash(120, 255, 255, 255));
     // 敵は 1 体ずつ斬られて、まっぷたつになってはじける
     const targets = this.enemies.slice();
@@ -1987,7 +1997,7 @@ export class MainScene extends Phaser.Scene {
       this.time.delayedCall(delay, () => {
         if (e.dead) return;
         const angle = Phaser.Math.FloatBetween(0, Math.PI);
-        this.slashLine(e.x, e.y, angle, 90, 7, color);
+        this.slashLine(e.x, e.y, angle, 90, color);
         this.splitEnemy(e, angle);
         this.defeatEnemy(e, player);
       });
