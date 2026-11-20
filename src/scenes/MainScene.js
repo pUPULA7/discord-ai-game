@@ -57,6 +57,7 @@ const ITEM_TYPES = {
   boomerang: { name: 'ブーメラン', mark: '戻', color: 0xe8c07a, desc: '途中で戻ってくる' },
   orbit: { name: 'えいせい', mark: '衛', color: 0xc6ff4d, desc: 'まわりを玉が 2 つ回る' },
   long: { name: 'ロングレーザー', mark: '長', color: 0xff4dd2, desc: 'ビームが 3 倍長い' },
+  magnet: { name: '磁石', mark: '磁', color: 0xff3b3b, desc: 'アイテムを吸い寄せる' },
 };
 const ITEM_KEYS = Object.keys(ITEM_TYPES);
 const SPREAD_ANGLES = [-16, 0, 16]; // 散弾の広がり（度）
@@ -83,6 +84,8 @@ const ORBIT_RADIUS = 48;
 const ORBIT_COUNT = 2;
 const ORBIT_SPEED = 0.006; // ラジアン/ミリ秒
 const ORBIT_SIZE = 8;
+const MAGNET_SPEED = 320; // 磁石で吸い寄せられるアイテムの速さ（px/秒）
+const HURT_DISTANCE = ENEMY_RADIUS + 18; // 敵とこれより近いと「触れている」（痛そうな顔になる）
 const MAX_BEAMS = 300; // 重ねがけで弾が増えすぎないための上限
 const TEST_ENEMY_MAX = 30; // テストパネルの「敵+5」で出せる上限
 
@@ -280,11 +283,30 @@ export class MainScene extends Phaser.Scene {
     mouth.beginPath();
     mouth.arc(2, 4, 2, 0, Math.PI, false);
     mouth.strokePath();
-    face.add([cheekL, cheekR, eyeL, eyeR, hiL, hiR, mouth]);
+    // 敵に触れている間の痛そうな顔（ぎゅっとつぶった ＞＜ の目・への字の口・汗）。ふだんは非表示
+    const hurt = this.add.graphics();
+    hurt.lineStyle(2.2, outline, 1);
+    hurt.beginPath();
+    hurt.moveTo(-10, -5); hurt.lineTo(-5, -2); hurt.lineTo(-10, 1);
+    hurt.moveTo(10, -5); hurt.lineTo(5, -2); hurt.lineTo(10, 1);
+    hurt.strokePath();
+    hurt.fillStyle(outline, 1);
+    hurt.fillEllipse(0, 6, 7, 5);
+    hurt.fillStyle(0xff6f91, 1);
+    hurt.fillEllipse(0, 7.5, 4, 2);
+    const sweat = this.add.graphics();
+    sweat.fillStyle(0x7fd8ff, 0.95);
+    sweat.fillCircle(15, -10, 3);
+    sweat.fillTriangle(12.4, -11.5, 17.6, -11.5, 15, -17);
+    const hurtFace = this.add.container(0, 0, [hurt, sweat]).setVisible(false);
+    face.add([cheekL, cheekR, eyeL, eyeR, hiL, hiR, mouth, hurtFace]);
 
     c.add([shadow, earL, earR, earInL, earInR, body, shine, face]);
 
-    const cute = { container: c, body, ears: [earL, earR], face, eyes: [eyeL, eyeR], highlights: [hiL, hiR] };
+    const cute = {
+      container: c, body, ears: [earL, earR], face, eyes: [eyeL, eyeR], highlights: [hiL, hiR],
+      mouth, cheeks: [cheekL, cheekR], hurtFace, sweat, hurt: false,
+    };
 
     // ときどきまばたき
     this.time.addEvent({
@@ -338,7 +360,27 @@ export class MainScene extends Phaser.Scene {
     player.facing += (targetFacing - player.facing) * 0.2;
     face.x = player.facing * 3;
     face.y = 2 + (vy > 0 ? 1.5 : vy < 0 ? -1.5 : 0);
+    // 敵に触れている間は痛そうな顔 + ぷるぷる震える
+    const hurt = this.enemies.some((e) => !e.dead
+      && Phaser.Math.Distance.Between(e.x, e.y, player.rect.x, player.rect.y) < HURT_DISTANCE);
+    this.setHurtFace(player.cute, hurt);
+    if (hurt) {
+      container.x += Math.sin(time * 0.09) * 1.5;
+      player.cute.sweat.y = Math.sin(time * 0.012) * 1.5;
+    }
     player.label.setPosition(player.rect.x, container.y - 34);
+  }
+
+  // ふつうの顔 ⇔ 痛そうな顔 の切り替え
+  setHurtFace(cute, hurt) {
+    if (cute.hurt === hurt) return;
+    cute.hurt = hurt;
+    cute.hurtFace.setVisible(hurt);
+    cute.mouth.setVisible(!hurt);
+    cute.eyes.forEach((e) => e.setVisible(!hurt));
+    cute.highlights.forEach((h) => h.setAlpha(hurt ? 0 : 1));
+    cute.cheeks.forEach((ch) => ch.setFillStyle(hurt ? 0xff3355 : 0xff6f91, hurt ? 0.9 : 0.7));
+    if (hurt) this.tweens.add({ targets: cute.body, scale: { from: 0.85, to: 1 }, duration: 160, ease: 'Back.Out' });
   }
 
   // スマホ用：バーチャルスティック + 「色」「加速」「ビーム」ボタン（1P を操作）
@@ -753,7 +795,7 @@ export class MainScene extends Phaser.Scene {
       byPlayer.score += 1;
       this.updateScoreText();
     }
-    // ときどきアイテムを落とす（20 種類からランダム）
+    // ときどきアイテムを落とす（21 種類からランダム）
     if (Math.random() < ITEM_DROP_CHANCE) {
       this.spawnItem(enemy.x, enemy.y, Phaser.Utils.Array.GetRandom(ITEM_KEYS));
     }
@@ -835,7 +877,23 @@ export class MainScene extends Phaser.Scene {
   }
 
   // アイテムを拾う判定・消える判定・効果時間の管理
-  updateItems(time) {
+  updateItems(time, delta) {
+    // 磁石を持っているプレイヤーがいれば、落ちているアイテムがいちばん近い持ち主へ吸い寄せられる
+    const magnets = this.players.filter((p) => this.hasPower(p, 'magnet'));
+    if (magnets.length) {
+      this.items.forEach((item) => {
+        let target = null;
+        let best = Infinity;
+        magnets.forEach((p) => {
+          const d = Phaser.Math.Distance.Between(item.x, item.y, p.rect.x, p.rect.y);
+          if (d < best) { best = d; target = p; }
+        });
+        if (best < 1) return;
+        const step = Math.min(best, MAGNET_SPEED * delta / 1000);
+        item.x += (target.rect.x - item.x) / best * step;
+        item.y += (target.rect.y - item.y) / best * step;
+      });
+    }
     this.items = this.items.filter((item) => {
       const picker = this.players.find((p) => Phaser.Math.Distance.Between(p.rect.x, p.rect.y, item.x, item.y)
         < ITEM_RADIUS + PLAYER_SIZE / 2 + 2);
@@ -896,7 +954,7 @@ export class MainScene extends Phaser.Scene {
         });
         return `${who}${list.join(compact ? ' ' : '・')}`;
       });
-    const text = parts.length ? `ビーム変化中　${parts.join('　')}` : '';
+    const text = parts.length ? `アイテム効果中　${parts.join('　')}` : '';
     if (text !== this.powerText.text) this.powerText.setText(text);
   }
 
@@ -932,8 +990,8 @@ export class MainScene extends Phaser.Scene {
     ITEM_KEYS.forEach((type, i) => {
       const def = ITEM_TYPES[type];
       const x = 100 + (i % 5) * 150;
-      const y = 150 + Math.floor(i / 5) * 58;
-      const r = makeBtn(x, y, 140, 48, def.color, () => this.toggleTestPower(type));
+      const y = 140 + Math.floor(i / 5) * 50;
+      const r = makeBtn(x, y, 140, 44, def.color, () => this.toggleTestPower(type));
       const orb = this.add.circle(x - 51, y, 12, def.color).setStrokeStyle(2, 0xffffff);
       const mark = this.add.text(x - 51, y, def.mark, {
         ...font, fontSize: '13px', fontStyle: 'bold', color: '#1d1d33',
@@ -1212,7 +1270,7 @@ export class MainScene extends Phaser.Scene {
     this.updateBeams(time, delta);
     this.updateEnemies(time, delta);
     this.updateSatellites(time);
-    this.updateItems(time);
+    this.updateItems(time, delta);
     this.updateBackground(delta);
   }
 }
